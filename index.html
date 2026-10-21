@@ -3755,6 +3755,10 @@ class Signal {
   send(type, dst, payload) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({ type, payload, dst })); }
   close() { clearInterval(this.hb); try { this.ws.close(); } catch (e) { } }
 }
+// the matchmaking server only passes messages shaped like the PeerJS library's own
+// (a different shape gets the sender disconnected), so we speak that format
+const sdpOf = p => p && (typeof p.sdp === 'string' ? p.sdp : p.sdp && p.sdp.sdp);
+const candOf = p => p && (p.candidate || p.c);
 const candJSON = c => (c && c.toJSON ? c.toJSON() : { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex });
 
 class P2PRoom {
@@ -3863,23 +3867,23 @@ const P2P = {
     const room = new P2PRoom(true, sig.id); room.sig = sig;
     const early = {};
     sig.on('OFFER', async m => {
-      const src = m.src; if (!src || !m.payload || typeof m.payload.sdp !== 'string') return;
+      const src = m.src; const sdp = sdpOf(m.payload); if (!src || typeof sdp !== 'string') return; const cid = m.payload.connectionId || 'dc_game';
       if (Object.keys(room.chans).length >= 3) return;          // party is full
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
       room.pcs[src] = pc;
-      pc.onicecandidate = e => { if (e.candidate) sig.send('CANDIDATE', src, { c: candJSON(e.candidate) }); };
+      pc.onicecandidate = e => { if (e.candidate) sig.send('CANDIDATE', src, { candidate: candJSON(e.candidate), type: 'data', connectionId: cid }); };
       pc.ondatachannel = e => room.attach(src, e.channel);
       pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') room.drop(src); };
       try {
-        await pc.setRemoteDescription({ type: 'offer', sdp: m.payload.sdp });
+        await pc.setRemoteDescription({ type: 'offer', sdp });
         for (const c of early[src] || []) pc.addIceCandidate(c).catch(() => { });
         delete early[src];
         const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
-        sig.send('ANSWER', src, { sdp: ans.sdp });
+        sig.send('ANSWER', src, { sdp: { type: 'answer', sdp: ans.sdp }, type: 'data', connectionId: cid });
       } catch (e) { console.error(e); }
     });
     sig.on('CANDIDATE', m => {
-      const pc = room.pcs[m.src]; const c = m.payload && m.payload.c; if (!c) return;
+      const pc = room.pcs[m.src]; const c = candOf(m.payload); if (!c) return;
       if (pc && pc.remoteDescription) pc.addIceCandidate(c).catch(() => { });
       else (early[m.src] = early[m.src] || []).push(c);
     });
@@ -3902,22 +3906,22 @@ const P2P = {
   },
   async connect(code) {
     const myId = PEER_PREFIX + 'f-' + Math.random().toString(36).slice(2, 10);
-    const hostId = PEER_PREFIX + code;
+    const hostId = PEER_PREFIX + code; const cid = 'dc_' + Math.random().toString(36).slice(2, 12);
     const sig = new Signal(myId);
     await sig.open();
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     const dc = pc.createDataChannel('game', { ordered: true });
     const room = new P2PRoom(false, myId); room.sig = sig; room.hostId = hostId; room.pcs[hostId] = pc;
     const q = [];
-    pc.onicecandidate = e => { if (e.candidate) sig.send('CANDIDATE', hostId, { c: candJSON(e.candidate) }); };
+    pc.onicecandidate = e => { if (e.candidate) sig.send('CANDIDATE', hostId, { candidate: candJSON(e.candidate), type: 'data', connectionId: cid }); };
     pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') room.drop(hostId); };
     sig.on('ANSWER', async m => {
       if (m.src !== hostId || !m.payload) return;
-      try { await pc.setRemoteDescription({ type: 'answer', sdp: m.payload.sdp }); for (const c of q) pc.addIceCandidate(c).catch(() => { }); q.length = 0; } catch (e) { console.error(e); }
+      try { await pc.setRemoteDescription({ type: 'answer', sdp: sdpOf(m.payload) }); for (const c of q) pc.addIceCandidate(c).catch(() => { }); q.length = 0; } catch (e) { console.error(e); }
     });
-    sig.on('CANDIDATE', m => { const c = m.payload && m.payload.c; if (!c || m.src !== hostId) return; if (pc.remoteDescription) pc.addIceCandidate(c).catch(() => { }); else q.push(c); });
+    sig.on('CANDIDATE', m => { const c = candOf(m.payload); if (!c || m.src !== hostId) return; if (pc.remoteDescription) pc.addIceCandidate(c).catch(() => { }); else q.push(c); });
     const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
-    sig.send('OFFER', hostId, { sdp: offer.sdp, type: 'data' });
+    sig.send('OFFER', hostId, { sdp: { type: 'offer', sdp: offer.sdp }, type: 'data', connectionId: cid, label: cid, reliable: true, serialization: 'json' });
     await new Promise((res, rej) => {
       const fail = code => { clearTimeout(to); rej(Object.assign(new Error(code), { code })); };
       const to = setTimeout(() => fail(pc.remoteDescription ? 'ice' : 'nohost'), 25000);
