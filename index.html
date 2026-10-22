@@ -79,6 +79,7 @@ input[type=text]{font-family:var(--body);font-size:1.1rem;font-weight:700;backgr
 .playbtn:active{transform:translateY(3px);box-shadow:0 3px 0 #8a6d00}
 .mode{display:flex;gap:6px}
 .mode button{flex:1}
+.mode4 button{padding-left:4px;padding-right:4px;font-size:.85rem;white-space:nowrap}
 .mode button.on{background:var(--gold);color:#16120a}
 .member{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--panel-2);border-radius:8px}
 .member .dot{width:12px;height:12px;border-radius:50%}
@@ -550,6 +551,7 @@ const HEALS = {
   MED: { name: 'Med Kit', stat: 'hp', amt: 100, cap: 100, use: 7, stack: 3, give: 1, rar: 1 },
   MINI: { name: 'Small Shield', stat: 'sh', amt: 25, cap: 50, use: 2, stack: 6, give: 3, rar: 1 },
   SHIELD: { name: 'Shield Potion', stat: 'sh', amt: 50, cap: 100, use: 4.5, stack: 3, give: 1, rar: 2 },
+  CHUG: { name: 'Chug Jug', stat: 'both', amt: 100, cap: 100, use: 15, stack: 1, give: 1, rar: 4 },
 };
 // movement items: used with a single click
 const MOVES = {
@@ -593,7 +595,10 @@ const BOT_NAMES = ['NightOwl', 'PixelPirate', 'GhostByte', 'ToastyMcToast', 'Bus
   'SnackAttack', 'MidnightMoth', 'PogoStick', 'NovaNinja', 'BoltBurger', 'SneakyPete', 'ColdBrew', 'TinyTitan', 'JellyJam', 'RocketRoo',
   'PebblePunch', 'FuzzyDice', 'GlitchGoblin', 'MangoMadness', 'IcyIggy', 'HoverHank', 'PaperPlane', 'NachoNacho', 'CloudKicker', 'SonicSloth',
   'PotatoPilot', 'MarbleMaze', 'JetJelly', 'Moonwalker', 'GravyBoat', 'TidyTiger'];
-const MODES = { SOLO: { team: 1, players: 50 }, DUOS: { team: 2, players: 50 }, SQUADS: { team: 4, players: 52 } };
+const MODES = { SOLO: { team: 1, players: 50 }, DUOS: { team: 2, players: 50 }, SQUADS: { team: 4, players: 52 }, '25V25': { team: 25, players: 50, big: true } };
+const MODE_LABEL = { SOLO: 'SOLO', DUOS: 'DUOS', SQUADS: 'SQUADS', '25V25': '25 V 25' };
+const MAX_PARTY = 25, SMALL_PARTY = 4;
+const BIG_TEAM = [{ name: 'BLUE', col: '#4aa8ff' }, { name: 'RED', col: '#ff5a5a' }];
 const XP_LEVEL = 1000;
 
 // ---- island layout (meters). Island center at 0,0; +x east, +z south ----
@@ -1168,7 +1173,7 @@ function newMatch(opt) {
   for (let i = 0; i < nb; i++) {
     const f = new Fighter(names[i % names.length] + (i >= names.length ? '_' + i : ''), 0, rng.pick(OUTFITS).id, 'bot');
     f.skill = rng.range(0.25, 0.85);
-    if (i < ts - party.length) { f.team = 0; f.follow = true; f.skill = Math.max(f.skill, 0.6); f.slotIdx = party.length + i; }
+    if (i < ts - party.length) { f.team = 0; f.slotIdx = party.length + i; if (ts <= SMALL_PARTY) { f.follow = true; f.skill = Math.max(f.skill, 0.6); } }
     else { const k = i - Math.max(0, ts - party.length); f.team = 1 + Math.floor(k / ts); f.slotIdx = k % ts; }
     G.fighters.push(f);
   }
@@ -1177,14 +1182,15 @@ function newMatch(opt) {
   for (const f of G.fighters) {
     if (f.kind !== 'bot') continue;
     if (f.follow) { f.jumpAt = 9999; continue; }
-    if (teamLead[f.team]) { const L = teamLead[f.team]; f.landTarget = [L.landTarget[0] + rng.range(-12, 12), L.landTarget[1] + rng.range(-12, 12)]; f.jumpAt = L.jumpAt + rng.range(0, 1.5); continue; }
+    const grp = ts <= SMALL_PARTY ? f.team : f.team * 100 + Math.floor(f.slotIdx / 4);   // big teams drop in squads of 4
+    if (teamLead[grp]) { const L = teamLead[grp]; f.landTarget = [L.landTarget[0] + rng.range(-12, 12), L.landTarget[1] + rng.range(-12, 12)]; f.jumpAt = L.jumpAt + rng.range(0, 1.5); continue; }
     let tx, tz;
     if (rng.chance(0.65)) { const P = rng.pick(POIS); const a = rng.range(0, TAU), d = rng.range(0, P.r * .8); tx = P.x + Math.cos(a) * d; tz = P.z + Math.sin(a) * d; }
     else { const a = rng.range(0, TAU), d = Math.sqrt(rng.next()) * 520; tx = Math.cos(a) * d; tz = Math.sin(a) * d; }
     f.landTarget = [tx, tz];
     const s = (tx - G.bus.sx) * dx + (tz - G.bus.sz) * dz;
     f.jumpAt = clamp(s - rng.range(30, 140), 120, G.bus.len - 40);
-    teamLead[f.team] = f;
+    teamLead[grp] = f;
   }
   G.teams = new Set(G.fighters.map(f => f.team)).size;
   // helicopters
@@ -1199,7 +1205,7 @@ function spawnFloorLoot(l, rng) {
     addPickup(l.x, l.y, l.z, g, 0);
     addPickup(l.x + 0.7, l.y, l.z + 0.4, { k: 'AMMO', a: WEAPONS[g.k].ammo, n: AMMO[WEAPONS[g.k].ammo].bundle }, 0);
   } else if (roll < 0.78) {
-    const k = rng.pick(['BAND', 'BAND', 'MINI', 'MINI', 'SHIELD', 'MED']);
+    const k = rng.chance(0.04) ? 'CHUG' : rng.pick(['BAND', 'BAND', 'MINI', 'MINI', 'SHIELD', 'MED']);
     addPickup(l.x, l.y, l.z, { k, n: HEALS[k].give }, 0);
   } else if (roll < 0.88) {
     const k = rng.pick(['SHOCK', 'CRASH', 'CRASH', 'GRAPPLE']);
@@ -1235,6 +1241,7 @@ function toast(text, life, col) {
 function feed(text, mine) { G.feed.push({ text, life: 6, mine }); if (G.feed.length > 6) G.feed.shift(); netEvent(['k', text, mine ? 1 : 0]); }
 function busPos() { const B = G.bus; return [B.sx + B.dx * B.s, B.sz + B.dz * B.s]; }
 function aliveTeams() { const s = new Set(); for (const f of G.fighters) if (f.alive) s.add(f.team); return s; }
+function teamAlive(team) { let n = 0; for (const f of G.fighters) if (f.alive && f.team === team) n++; return n; }
 function playersLeft() { let n = 0; for (const f of G.fighters) if (f.alive) n++; return n; }
 function teammates(f) { return G.fighters.filter(o => o !== f && o.team === f.team && o.alive); }
 
@@ -1700,7 +1707,7 @@ function openChest(c, f) {
   const g = makeGun(rng.pick(WEAPON_POOL), rollRar(rng, CHEST_RAR));
   spill(c.x, c.y, c.z, g);
   spill(c.x, c.y, c.z, { k: 'AMMO', a: WEAPONS[g.k].ammo, n: AMMO[WEAPONS[g.k].ammo].bundle * 2 });
-  if (rng.chance(0.75)) { const h = rng.pick(['BAND', 'MINI', 'SHIELD', 'MED', 'MINI']); spill(c.x, c.y, c.z, { k: h, n: HEALS[h].give }); }
+  if (rng.chance(0.75)) { const h = rng.chance(0.07) ? 'CHUG' : rng.pick(['BAND', 'MINI', 'SHIELD', 'MED', 'MINI']); spill(c.x, c.y, c.z, { k: h, n: HEALS[h].give }); }
   if (rng.chance(0.3)) { const m = rng.pick(['SHOCK', 'CRASH', 'GRAPPLE']); spill(c.x, c.y, c.z, { k: m, n: MOVES[m].give }); }
   spill(c.x, c.y, c.z, { k: 'MAT', m: 'WOOD', n: 30 });
   burst(c.x, c.y + 0.6, c.z, [1, .85, .3], 16, 4);
@@ -1712,22 +1719,24 @@ function openBox(b, f) {
   for (let i = 0; i < 2; i++) { const a = G.rng.pick(AMMO_ORDER); spill(b.x, b.y, b.z, { k: 'AMMO', a, n: AMMO[a].bundle }); }
   sfxAt('chest', b.x, b.y, b.z, f);
 }
+function healUseful(f, H) { return H.stat === 'both' ? f.hp < H.cap || f.sh < H.cap : (H.stat === 'hp' ? f.hp : f.sh) < H.cap; }
 function useHeal(f, dt) {
   const it = f.cur();
   if (!it || !HEALS[it.k]) { f.using = false; return; }
   const H = HEALS[it.k];
   if (!f.using) {
-    const cur = H.stat === 'hp' ? f.hp : f.sh;
-    if (cur >= H.cap) { if (f.kind === 'human') toastFor(f, (H.stat === 'hp' ? 'HEALTH' : 'SHIELD') + ' ALREADY AT ' + H.cap, '#c8d0ff'); return; }
+    if (!healUseful(f, H)) { if (f.kind === 'human') toastFor(f, H.stat === 'both' ? 'HEALTH AND SHIELD ARE ALREADY FULL' : (H.stat === 'hp' ? 'HEALTH' : 'SHIELD') + ' ALREADY AT ' + H.cap, '#c8d0ff'); return; }
     f.using = true; f.useT = 0; f.reloadT = 0; return;
   }
   f.useT += dt;
   if (f.useT >= H.use) {
     f.using = false;
-    if (H.stat === 'hp') f.hp = Math.max(f.hp, Math.min(H.cap, f.hp + H.amt)); else f.sh = Math.max(f.sh, Math.min(H.cap, f.sh + H.amt));
+    if (H.stat === 'hp' || H.stat === 'both') f.hp = Math.max(f.hp, Math.min(H.cap, f.hp + H.amt));
+    if (H.stat === 'sh' || H.stat === 'both') f.sh = Math.max(f.sh, Math.min(H.cap, f.sh + H.amt));
     it.n--; if (it.n <= 0) f.slots[f.sel] = null;
-    burst(f.x, f.y + 1, f.z, H.stat === 'hp' ? [.4, .95, .5] : [.4, .7, 1], 12, 3);
+    burst(f.x, f.y + 1, f.z, H.stat === 'hp' ? [.4, .95, .5] : H.stat === 'both' ? [.5, .8, 1] : [.4, .7, 1], H.stat === 'both' ? 40 : 12, 3);
     sfxFor(f, H.stat === 'hp' ? 'heal' : 'shield', .6);
+    if (H.stat === 'both') sfxFor(f, 'heal', .5);
     if (f === G.me && G.stats) G.stats.heals = (G.stats.heals || 0) + 1;
   }
 }
@@ -1993,7 +2002,7 @@ function botThink(b) {
   }
   // heal up when calm
   if (!b.target && (b.hp < 70 || b.sh < 50)) {
-    const hi = b.slots.findIndex(s => s && HEALS[s.k] && (HEALS[s.k].stat === 'sh' ? b.sh < HEALS[s.k].cap : b.hp < HEALS[s.k].cap));
+    const hi = b.slots.findIndex(s => s && HEALS[s.k] && healUseful(b, HEALS[s.k]) && (HEALS[s.k].stat !== 'both' || b.hp + b.sh < 120));
     if (hi >= 0 && !danger) { b.sel = hi; b.goalKind = 'heal'; return; }
   }
   const burning = !inCircle(b.x, b.z, S.cx, S.cz, S.r);
@@ -2703,6 +2712,51 @@ function rebuildProps() {
 
 // ---------------------------------------------------------------- characters
 // push a limb box hanging from a pivot, swinging by angle `sw` about the body's side axis
+// ---- weapon + item models built from boxes. Each part: [forward, up, right, width, height, length, colour, extra pitch]
+// colour 'R' = the weapon's rarity colour, 'r' = a darker rarity tint
+const GBLK = [.07, .07, .08], GMET = [.24, .25, .28], GDRK = [.13, .14, .16], GWOOD = [.47, .29, .15], GWOOD2 = [.36, .21, .1], GLENS = [.35, .6, .85];
+const GUN_PARTS = {
+  // SCAR-style assault rifle: receiver, rail sight, handguard, curved mag, stock
+  AR: [[.12, .03, 0, .1, .15, .52, GBLK], [.56, .06, 0, .045, .045, .36, GMET], [.42, .035, 0, .09, .11, .24, 'r'], [.74, .06, 0, .06, .06, .06, GDRK],
+    [.12, .14, 0, .05, .04, .42, GDRK], [.04, .19, 0, .07, .08, .16, GBLK], [.12, .19, 0, .05, .05, .02, GLENS], [.5, .12, 0, .03, .06, .03, GBLK],
+    [.17, -.15, 0, .06, .2, .1, GMET, -.25], [-.02, -.12, 0, .06, .16, .07, GBLK, .35], [-.27, .0, 0, .08, .16, .26, GBLK], [-.38, -.03, 0, .085, .2, .06, GDRK], [.28, .03, .05, .01, .05, .12, 'R']],
+  // compact SMG: short body, long straight mag, folding wire stock, top rail
+  SMG: [[.08, .03, 0, .09, .14, .36, GBLK], [.33, .05, 0, .045, .045, .2, GMET], [.42, .05, 0, .06, .06, .06, GDRK], [.08, .13, 0, .05, .03, .32, 'R'],
+    [.12, -.2, 0, .055, .28, .08, GMET], [-.03, -.12, 0, .06, .16, .07, GBLK, .3], [-.18, .04, 0, .03, .03, .26, GMET], [-.31, -.02, 0, .03, .14, .03, GMET], [.25, -.07, 0, .05, .08, .05, GBLK]],
+  // semi-auto pistol: slide over frame, angled grip, trigger guard
+  PISTOL: [[.1, .07, 0, .065, .09, .3, GMET], [.08, .0, 0, .06, .06, .26, GBLK], [.0, -.11, 0, .065, .19, .09, GBLK, .3], [.06, -.06, 0, .02, .05, .1, GBLK],
+    [.24, .13, 0, .02, .03, .02, GBLK], [.13, .07, .035, .005, .05, .16, 'R']],
+  // pump shotgun: long barrel over a magazine tube, wooden pump and stock
+  PUMP: [[.06, .04, 0, .1, .15, .3, GDRK], [.5, .07, 0, .06, .06, .66, GMET], [.43, .0, 0, .05, .05, .52, GBLK], [.42, -.005, 0, .1, .1, .24, GWOOD],
+    [.82, .1, 0, .02, .04, .02, 'R'], [-.03, -.11, 0, .065, .15, .08, GWOOD2, .35], [-.3, -.04, 0, .09, .17, .38, GWOOD], [-.48, -.06, 0, .095, .2, .04, GBLK], [.08, .12, 0, .1, .025, .12, 'R']],
+  // tactical shotgun: black, box shell holder, heat shield, adjustable stock
+  TAC: [[.08, .04, 0, .11, .17, .38, GBLK], [.46, .06, 0, .065, .065, .5, GMET], [.46, .1, 0, .08, .04, .42, GDRK], [.18, -.12, 0, .08, .13, .14, GDRK],
+    [.3, .0, 0, .1, .1, .16, 'r'], [-.02, -.12, 0, .065, .16, .07, GBLK, .3], [-.24, .02, 0, .06, .12, .26, GBLK], [-.38, -.01, 0, .07, .17, .05, GDRK], [.08, .145, 0, .05, .03, .3, 'R']],
+  // bolt-action sniper: long barrel, big scope with mounts, bolt handle, wooden stock with cheek rest
+  SNIPER: [[.14, .03, 0, .1, .13, .5, GDRK], [.72, .06, 0, .045, .045, .9, GMET], [1.16, .06, 0, .06, .06, .08, GBLK], [.14, .17, 0, .1, .1, .5, GBLK],
+    [.4, .17, 0, .12, .12, .05, GBLK], [-.1, .17, 0, .11, .11, .05, GBLK], [.42, .17, 0, .07, .07, .01, GLENS], [.0, .11, 0, .04, .05, .04, GDRK], [.28, .11, 0, .04, .05, .04, GDRK],
+    [.02, .05, .09, .08, .03, .03, GMET], [.04, .05, .14, .04, .04, .04, GMET], [.38, -.02, 0, .1, .1, .3, GWOOD], [-.02, -.12, 0, .065, .15, .08, GWOOD2, .3],
+    [-.34, -.02, 0, .09, .16, .42, GWOOD], [-.3, .08, 0, .07, .05, .2, GWOOD2], [-.56, -.04, 0, .095, .2, .04, GBLK], [.2, -.08, 0, .07, .08, .1, GBLK], [.14, .03, .05, .01, .06, .2, 'R']],
+};
+const GUN_MUZZLE = { AR: .92, SMG: .48, PISTOL: .27, PUMP: .86, TAC: .73, SNIPER: 1.22 };
+function pushParts(L, parts, x, y, z, yaw, ph, sc, rc) {
+  const sy = Math.sin(yaw), cy = Math.cos(yaw), c = Math.cos(ph), sn = Math.sin(ph);
+  for (const q of parts) {
+    const d = q[0] * sc, p = q[1] * sc, r = q[2] * sc;
+    const fw = c * d + sn * p, up = -sn * d + c * p;
+    const col = q[6] === 'R' ? rc : q[6] === 'r' ? [rc[0] * .45 + .05, rc[1] * .45 + .05, rc[2] * .45 + .05] : q[6];
+    L.push(x + sy * fw + cy * r, y + up, z + cy * fw - sy * r, yaw, q[3] * sc, q[4] * sc, q[5] * sc, col[0], col[1], col[2], 1, ph + (q[7] || 0));
+  }
+}
+function pushGun(L, k, rar, x, y, z, yaw, ph, sc, muzzle, t) {
+  const parts = GUN_PARTS[k]; if (!parts) return;
+  pushParts(L, parts, x, y, z, yaw, ph, sc, RARITY[rar].rgb);
+  if (muzzle) { const d = GUN_MUZZLE[k] * sc, sy = Math.sin(yaw), cy = Math.cos(yaw), fw = Math.cos(ph) * d + Math.sin(ph) * .06 * sc, up = -Math.sin(ph) * d + Math.cos(ph) * .06 * sc;
+    L.push(x + sy * fw, y + up, z + cy * fw, yaw + t * 9, .25, .25, .25, 3, 2.6, 1.4, 1); }
+}
+const CHUG_PARTS = [[0, 0, 0, .44, .4, .44, [.18, .48, .9]], [0, .02, 0, .46, .1, .46, [1, .82, .25]], [0, .27, 0, .22, .16, .22, [.4, .7, 1]],
+  [0, .39, 0, .14, .1, .14, [.6, .4, .22]], [0, .08, .27, .06, .26, .14, [.92, .96, 1]], [.18, .1, -.1, .05, .14, .05, [.75, .9, 1]]];
+function pushChug(L, x, y, z, yaw, sc, tip) { pushParts(L, CHUG_PARTS, x, y, z, yaw, tip, sc, [1, 1, 1]); }
 function limb(L, f, px, py, pz, w, len, d, sw, col, sideTilt) {
   const cy = Math.cos(f.yaw), sy = Math.sin(f.yaw);
   // local pivot -> world
@@ -2777,10 +2831,7 @@ function pushCharacter(L, f, t, isMe) {
   // weapon / pickaxe / build tool
   const hx = bx - cy * .3 + sy * .45, hz = bz + sy * .3 + cy * .45, hy = by + 1.25 + bob - aimP * 0.3;
   if (g && !air && !sitting) {
-    const W_ = WEAPONS[g.k], rc = RARITY[g.r].rgb, len = W_.len;
-    L.push(hx + sy * len * .35, hy, hz + cy * len * .35, f.yaw, .1, .14, len, .15, .15, .17, 1, aimP * 0.8);
-    L.push(hx + sy * len * .05, hy - .12, hz + cy * len * .05, f.yaw, .08, .2, .1, rc[0] * .7, rc[1] * .7, rc[2] * .7, 1);
-    if (f.muzzle > 0) L.push(hx + sy * (len * .9), hy + .02, hz + cy * (len * .9), f.yaw + t * 9, .25, .25, .25, 3, 2.6, 1.4, 1);
+    pushGun(L, g.k, g.r, hx + sy * .06, hy + .04, hz + cy * .06, f.yaw, aimP * 0.8, 1, f.muzzle > 0, t);
   } else if (f.sel < 0 && !air && !sitting && !f.buildMode) {
     // pickaxe: wooden handle, steel head with two curved points
     const ph = -0.6 + (f.swing > 0 ? 1.2 : 0), c = Math.cos(ph), sn = Math.sin(ph);
@@ -2795,7 +2846,9 @@ function pushCharacter(L, f, t, isMe) {
   } else if (f.cur() && MOVES[f.cur().k] && !air && !sitting) {
     const mc = MOVES[f.cur().k].col; L.push(hx + sy * .2, hy, hz + cy * .2, f.yaw, .26, .26, .26, mc[0], mc[1], mc[2], 1); L.push(hx + sy * .2, hy, hz + cy * .2, f.yaw, .28, .07, .28, 1, 1, 1, 1);
   } else if (HEALS[f.cur() && f.cur().k] && !air) {
-    L.push(hx + sy * .2, hy, hz + cy * .2, f.yaw, .22, .22, .22, f.cur().k.includes('SH') || f.cur().k === 'MINI' ? .4 : 1, f.cur().k === 'MINI' || f.cur().k === 'SHIELD' ? .7 : .95, 1, 1);
+    const hk = f.cur().k;
+    if (hk === 'CHUG') { const tip = f.using ? 1.2 : 0, jy = hy + (f.using ? .32 : 0), jf = f.using ? .12 : .22; pushChug(L, hx + sy * jf, jy, hz + cy * jf, f.yaw, 0.85, tip); }
+    else L.push(hx + sy * .2, hy, hz + cy * .2, f.yaw, .22, .22, .22, hk.includes('SH') || hk === 'MINI' ? .4 : 1, hk === 'MINI' || hk === 'SHIELD' ? .7 : .95, 1, 1);
   }
 }
 
@@ -2879,13 +2932,12 @@ function renderScene(t, quality) {
   for (const p of G.pickups) {
     if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > 90 * 90) continue;
     const k = itemKind(p.item), bobY = p.y + 0.35 + Math.sin(t * 2 + p.id) * 0.08;
-    if (k === 'gun') { const c = RARITY[p.item.r].rgb, w = WEAPONS[p.item.k]; L.push(p.x, bobY + .1, p.z, p.spin, .14, .18, w.len, .2, .2, .22, 1); L.push(p.x, bobY + .02, p.z, p.spin, .1, .3, .1, c[0], c[1], c[2], 1);
-      L.push(p.x, p.y + .03, p.z, p.spin, .9, .04, .9, c[0], c[1], c[2], 1); }
+    if (k === 'gun') pushGun(L, p.item.k, p.item.r, p.x, bobY + .12, p.z, p.spin, 0, 1.15, false, t);
+    else if (k === 'heal' && p.item.k === 'CHUG') pushChug(L, p.x, bobY - .05, p.z, p.spin, 1.1, 0);
     else if (k === 'heal') { const H = HEALS[p.item.k]; const c = H.stat === 'hp' ? [1, .95, .95] : [.4, .7, 1]; L.push(p.x, bobY, p.z, p.spin, .32, .32, .32, c[0], c[1], c[2], 1); if (H.stat === 'hp') L.push(p.x, bobY, p.z, p.spin, .34, .1, .1, 1, .2, .2, 1); }
     else if (k === 'ammo') { const c = AMMO[p.item.a].col; L.push(p.x, p.y + .15, p.z, p.spin * .2, .45, .3, .3, c[0], c[1], c[2], 1); }
     else if (k === 'mat') { const c = MATS[p.item.m].col; L.push(p.x, p.y + .15, p.z, p.spin * .2, .5, .3, .5, c[0], c[1], c[2], 1); }
-    else if (k === 'move') { const c = MOVES[p.item.k].col, rc = RARITY[MOVES[p.item.k].rar].rgb; L.push(p.x, bobY, p.z, p.spin, .34, .34, .34, c[0], c[1], c[2], 1); L.push(p.x, bobY, p.z, p.spin, .36, .08, .36, 1, 1, 1, 1);
-      L.push(p.x, p.y + .03, p.z, p.spin, .9, .04, .9, rc[0], rc[1], rc[2], 1); }
+    else if (k === 'move') { const c = MOVES[p.item.k].col, rc = RARITY[MOVES[p.item.k].rar].rgb; L.push(p.x, bobY, p.z, p.spin, .34, .34, .34, c[0], c[1], c[2], 1); L.push(p.x, bobY, p.z, p.spin, .36, .08, .36, 1, 1, 1, 1); }
   }
   // crash pads, grenades in flight, grappler lines
   for (const p of G.pads) {
@@ -2961,18 +3013,29 @@ function renderScene(t, quality) {
   const St = G.storm;
   gl.disable(gl.CULL_FACE);
   gl.uniform2f(R.u.uFog, 1e5, 1e5 + 1);
-  // drop marker beam: no fog so you can see it from the bus; visible until you land
-  if (markerBeamOn()) {
-    const m = G.marker, gy = groundH(m.x, m.z), pulse = 0.75 + 0.15 * Math.sin(t * 3);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);   // additive so it glows
-    S3.fx.clear();
-    S3.fx.push(m.x, gy + 160, m.z, t * 0.5, 4.0, 320, 4.0, 1.0, 0.75, .1, pulse * 0.45);
-    S3.fx.push(m.x, gy + 160, m.z, -t * 0.7, 2.0, 320, 2.0, 1.0, 0.9, .3, pulse * 0.8);
-    S3.fx.push(m.x, gy + 160, m.z, t, 0.8, 320, 0.8, 1.0, 1.0, .85, 1);
-    S3.fx.push(m.x, gy + 0.3, m.z, t, 6, 0.3, 6, 1.0, 0.85, .2, pulse * 0.6);
-    S3.fx.draw();
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);   // additive so things glow
+  S3.fx.clear();
+  // floor loot glows in its rarity colour (a soft light column and a ring on the ground)
+  const lootR2 = 70 * 70;
+  for (const p of G.pickups) {
+    const k = itemKind(p.item); if (k !== 'gun' && k !== 'heal' && k !== 'move') continue;
+    if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > lootR2) continue;
+    const r = itemRar(p.item), c = RARITY[r].rgb, a = (r === 0 ? .55 : 1) * (0.8 + 0.2 * Math.sin(t * 3 + p.id));
+    S3.fx.push(p.x, p.y + 1.1, p.z, t * .6, .36, 2.2, .36, c[0], c[1], c[2], .2 * a);
+    S3.fx.push(p.x, p.y + .7, p.z, -t * .8, .18, 1.4, .18, c[0], c[1], c[2], .35 * a);
+    S3.fx.push(p.x, p.y + .04, p.z, t * .4, 1.3, .03, 1.3, c[0], c[1], c[2], .4 * a);
   }
+  // drop marker beams (yours and your teammates'): no fog so you can see them from the bus; each stays until its owner lands
+  for (const mk of activeMarkers()) {
+    if (!mk.beam) continue;
+    const gy = groundH(mk.x, mk.z), pulse = 0.75 + 0.15 * Math.sin(t * 3), c = mk.col;
+    S3.fx.push(mk.x, gy + 160, mk.z, t * 0.5, 4.0, 320, 4.0, c[0], c[1] * .85, c[2] * .6, pulse * 0.45);
+    S3.fx.push(mk.x, gy + 160, mk.z, -t * 0.7, 2.0, 320, 2.0, c[0], c[1], c[2], pulse * 0.8);
+    S3.fx.push(mk.x, gy + 160, mk.z, t, 0.8, 320, 0.8, 1.0, 1.0, .9, 1);
+    S3.fx.push(mk.x, gy + 0.3, mk.z, t, 6, 0.3, 6, c[0], c[1], c[2], pulse * 0.6);
+  }
+  S3.fx.draw();
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const smx = new Float32Array(16); writeTRS(smx, 0, St.cx, 0, St.cz, 0, St.r, 1, St.r);
   S3.storm.drawAt(smx, [1, 1, 1, inStorm ? 0.22 : 0.42]);
   gl.enable(gl.CULL_FACE);
@@ -3092,9 +3155,20 @@ function drawHud(dt, t) {
     const nearest = POIS.reduce((b, P) => { const d = hyp(P.x - view.x, P.z - view.z); return d < b[0] ? [d, P] : b; }, [1e9, null]);
     if (nearest[1] && nearest[0] < nearest[1].r + 30 && view.phase === 'ground') txt(nearest[1].name, mx + mm / 2, y + 44 * s, 15, '#fff', 'center');
   }
+  // 25 v 25 scoreboard
+  if (MODES[G.mode] && MODES[G.mode].big) {
+    const mine = teamAlive(me.team), theirs = teamAlive(me.team === 0 ? 1 : 0), cx = HW / 2, y = 58 * s;
+    const A = BIG_TEAM[me.team === 0 ? 0 : 1], B = BIG_TEAM[me.team === 0 ? 1 : 0];
+    rrect(cx - 150 * s, y - 4 * s, 300 * s, 40 * s, 8, 'rgba(10,12,28,.7)');
+    rrect(cx - 146 * s, y, 110 * s, 32 * s, 6, A.col); rrect(cx + 36 * s, y, 110 * s, 32 * s, 6, B.col);
+    txt(A.name + ' ' + mine, cx - 91 * s, y + 16 * s, 18, '#fff', 'center'); txt(theirs + ' ' + B.name, cx + 91 * s, y + 16 * s, 18, '#fff', 'center');
+    txt('VS', cx, y + 16 * s, 15, '#ffd83a', 'center');
+  }
   // team panel
   { let y = 20 * s; const x = 16 * s;
-    const mates = G.fighters.filter(f => f.team === me.team).sort((a, b) => (a === me ? -1 : b === me ? 1 : a.slotIdx - b.slotIdx));
+    let mates = G.fighters.filter(f => f.team === me.team).sort((a, b) => (a === me ? -1 : b === me ? 1 : (b.kind === 'human') - (a.kind === 'human') || a.slotIdx - b.slotIdx));
+    let extra = 0;
+    if (G.teamSize > SMALL_PARTY) { const shown = mates.filter(f => f.kind === 'human').slice(0, 6); extra = mates.filter(f => f.alive && !shown.includes(f)).length; mates = shown; }
     for (const f of mates) {
       const col = TEAM_COLS[f.slotIdx % 4];
       rrect(x, y, 10 * s, 10 * s, 5, f.alive ? col : '#555');
@@ -3103,6 +3177,7 @@ function drawHud(dt, t) {
       y += 32 * s;
       if (G.teamSize === 1) break;
     }
+    if (extra) txt('+ ' + extra + ' MORE TEAMMATES ALIVE', x, y + 4 * s, 14, '#c8d0ff');
   }
   // kill feed
   { let y = HH - 160 * s; for (let i = G.feed.length - 1; i >= 0; i--) { const k = G.feed[i]; c.globalAlpha = Math.min(1, k.life); txt(k.text, 18 * s, y, 15, k.mine ? '#ffd83a' : '#fff'); y -= 22 * s; } c.globalAlpha = 1; }
@@ -3197,7 +3272,7 @@ function drawHotbar() {
     const k = itemKind(it);
     if (k === 'gun') { drawGunIcon(it.k, x + sz / 2, y + sz / 2 - 4 * s, sz * .8); txt(String(it.mag), x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
     else if (k === 'move') { drawMoveIcon(it.k, x + sz / 2, y + sz / 2 - 3 * s, sz * .62); if (it.n > 1 || MOVES[it.k].charges) txt((MOVES[it.k].charges ? '' : 'x') + it.n, x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
-    else { const H = HEALS[it.k]; c.fillStyle = H.stat === 'hp' ? '#f4f4f4' : '#5bb6ff'; c.beginPath(); c.arc(x + sz / 2, y + sz / 2 - 3 * s, 14 * s, 0, TAU); c.fill(); if (H.stat === 'hp') { c.fillStyle = '#e33'; c.fillRect(x + sz / 2 - 9 * s, y + sz / 2 - 6 * s, 18 * s, 6 * s); c.fillRect(x + sz / 2 - 3 * s, y + sz / 2 - 12 * s, 6 * s, 18 * s); } txt('x' + it.n, x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
+    else { drawHealIcon(it.k, x + sz / 2, y + sz / 2 - 3 * s, 15 * s); txt('x' + it.n, x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
   }
   // ammo for current gun
   const g = me.gun();
@@ -3222,12 +3297,38 @@ function drawHotbar() {
   }
 }
 function drawGunIcon(k, x, y, w) {
-  const c = hctx, s = w / 60; c.save(); c.translate(x, y); c.fillStyle = '#1d1f26'; c.strokeStyle = 'rgba(255,255,255,.5)'; c.lineWidth = 1;
-  const L = { AR: 26, SMG: 18, PISTOL: 10, PUMP: 27, TAC: 24, SNIPER: 30 }[k] || 20;
-  c.fillRect(-L * s, -4 * s, L * 2 * s, 8 * s); c.fillRect(-L * s * .3, 2 * s, 6 * s, 12 * s);
-  if (k !== 'PISTOL') c.fillRect(-L * s, -2 * s, 8 * s, 12 * s);
-  if (k === 'SNIPER') { c.fillStyle = '#333a48'; c.fillRect(-8 * s, -10 * s, 18 * s, 6 * s); }
-  if (k === 'AR' || k === 'SMG') c.fillRect(2 * s, 3 * s, 4 * s, 10 * s);
+  // side view of the same box model used in 3D
+  const parts = GUN_PARTS[k]; if (!parts) return;
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (const q of parts) { x0 = Math.min(x0, q[0] - q[5] / 2); x1 = Math.max(x1, q[0] + q[5] / 2); y0 = Math.min(y0, q[1] - q[4] / 2); y1 = Math.max(y1, q[1] + q[4] / 2); }
+  const sc = Math.min(w * 1.9 / (x1 - x0), w * .9 / (y1 - y0)), c = hctx;
+  c.save(); c.translate(x, y); c.scale(sc, sc); c.translate(-(x0 + x1) / 2, (y0 + y1) / 2);
+  const cs = v => 'rgb(' + v.map(q => Math.round(Math.min(1, q * 1.35 + .1) * 255)).join(',') + ')';
+  const order = parts.slice().sort((a, b) => (b[3] * b[4]) - (a[3] * a[4]));
+  for (const pass of [0, 1]) for (const q of order) {
+    const col = q[6] === 'R' ? [.85, .85, .9] : q[6] === 'r' ? [.4, .42, .48] : q[6];
+    c.save(); c.translate(q[0], -q[1]); c.rotate(q[7] || 0);
+    if (pass === 0) { c.fillStyle = 'rgba(255,255,255,.55)'; const e = 0.018; c.fillRect(-q[5] / 2 - e, -q[4] / 2 - e, q[5] + 2 * e, q[4] + 2 * e); }
+    else { c.fillStyle = cs(col); c.fillRect(-q[5] / 2, -q[4] / 2, q[5], q[4]); }
+    c.restore();
+  }
+  c.restore();
+}
+function drawHealIcon(k, x, y, r) {
+  const c = hctx, H = HEALS[k]; c.save(); c.translate(x, y);
+  if (k === 'CHUG') {
+    // big blue jug with a cork and a white handle
+    c.fillStyle = '#2f7de0'; c.beginPath(); c.ellipse(0, r * .25, r * .95, r * .8, 0, 0, TAU); c.fill();
+    c.fillStyle = '#5fb0ff'; c.fillRect(-r * .38, -r * .75, r * .76, r * .55);
+    c.fillStyle = '#9b6a3a'; c.fillRect(-r * .3, -r * 1.05, r * .6, r * .35);
+    c.strokeStyle = '#e8f3ff'; c.lineWidth = r * .18; c.beginPath(); c.arc(r * .9, r * .05, r * .38, -1.2, 1.2); c.stroke();
+    c.fillStyle = 'rgba(255,255,255,.65)'; c.beginPath(); c.ellipse(-r * .45, r * .05, r * .16, r * .3, -.4, 0, TAU); c.fill();
+    c.fillStyle = '#ffd83a'; c.font = 'bold ' + Math.round(r * .55) + 'px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('+', 0, r * .35);
+  } else {
+    c.fillStyle = H.stat === 'hp' ? '#f4f4f4' : '#5bb6ff'; c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill();
+    if (H.stat === 'hp') { c.fillStyle = '#e33'; c.fillRect(-r * .64, -r * .21, r * 1.28, r * .42); c.fillRect(-r * .21, -r * .64, r * .42, r * 1.28); }
+    else { c.fillStyle = 'rgba(255,255,255,.55)'; c.beginPath(); c.arc(-r * .3, -r * .35, r * .3, 0, TAU); c.fill(); }
+  }
   c.restore();
 }
 function drawPieceIcon(p, x, y, w) {
@@ -3251,7 +3352,7 @@ function drawMap(x, y, w, h, view, range) {
   stormOverlay(P, k);
   for (const f of G.fighters) if (f.alive && f.team === G.me.team && f !== view) { const [a, b] = P(f.x, f.z); c.fillStyle = TEAM_COLS[f.slotIdx % 4]; c.beginPath(); c.arc(a, b, 4, 0, TAU); c.fill(); }
   if (view.phase === 'bus') { const [a, b] = P(G.bus.sx, G.bus.sz), [a2, b2] = P(G.bus.sx + G.bus.dx * G.bus.len, G.bus.sz + G.bus.dz * G.bus.len); c.strokeStyle = '#ffd83a'; c.lineWidth = 2; c.beginPath(); c.moveTo(a, b); c.lineTo(a2, b2); c.stroke(); }
-  if (G.marker) { let [a, b] = P(G.marker.x, G.marker.z); a = clamp(a, x + 8, x + w - 8); b = clamp(b, y + 8, y + h - 8); drawPin(a, b, 0.8); }
+  for (const mk of activeMarkers()) { let [a, b] = P(mk.x, mk.z); a = clamp(a, x + 8, x + w - 8); b = clamp(b, y + 8, y + h - 8); drawPin(a, b, 0.8, mk.css); }
   // me arrow
   const [ax, ay] = [x + w / 2, y + h / 2];
   c.save(); c.translate(ax, ay); c.rotate(-Cam.yaw + Math.PI); c.fillStyle = '#ffd83a'; c.strokeStyle = '#000'; c.lineWidth = 1.5;
@@ -3277,7 +3378,7 @@ function drawBigMap() {
   for (const p of POIS) { const [a, b] = P(p.x, p.z); txt(p.name, a, b - p.r * k - 6, 13, '#fff', 'center'); }
   const B = G.bus; if (G.fighters.some(f => f.phase === 'bus')) { const [a, b] = P(B.sx, B.sz), [a2, b2] = P(B.sx + B.dx * B.len, B.sz + B.dz * B.len); c.strokeStyle = '#ffd83a'; c.lineWidth = 3; c.setLineDash([8, 6]); c.beginPath(); c.moveTo(a, b); c.lineTo(a2, b2); c.stroke(); c.setLineDash([]); }
   for (const f of G.fighters) if (f.alive && f.team === G.me.team) { const [a, b] = P(f.x, f.z); c.fillStyle = f === G.me ? '#ffd83a' : TEAM_COLS[f.slotIdx % 4]; c.beginPath(); c.arc(a, b, 6, 0, TAU); c.fill(); c.strokeStyle = '#000'; c.stroke(); }
-  if (G.marker) { const [a, b] = P(G.marker.x, G.marker.z); drawPin(a, b, 1.3); }
+  for (const mk of activeMarkers()) { const [a, b] = P(mk.x, mk.z); drawPin(a, b, 1.3, mk.css); if (mk.owner !== G.me) txt(mk.owner.name, a, b + 14, 12, mk.css, 'center'); }
   c.restore();
   G._mapRect = { x, y, sz };
   txt('CLICK TO MARK WHERE TO GO  -  RIGHT CLICK REMOVES THE MARK  -  ' + K('map') + ' TO CLOSE', HW / 2, y + sz + 18, 14, '#fff', 'center');
@@ -3291,27 +3392,44 @@ function drawSpectate() {
 }
 
 // ---------------------------------------------------------------- map marker
-function drawPin(x, y, sc) {
+function drawPin(x, y, sc, col) {
   const c = hctx; c.save(); c.translate(x, y); c.scale(sc, sc);
-  c.fillStyle = '#ffd83a'; c.strokeStyle = '#1a1406'; c.lineWidth = 2;
+  c.fillStyle = col || '#ffd83a'; c.strokeStyle = '#1a1406'; c.lineWidth = 2;
   c.beginPath(); c.moveTo(0, 0); c.lineTo(-9, -14); c.arc(0, -16, 9, Math.PI * 0.82, Math.PI * 0.18); c.closePath(); c.fill(); c.stroke();
   c.fillStyle = '#1a1406'; c.beginPath(); c.arc(0, -16, 3.5, 0, TAU); c.fill(); c.restore();
 }
-function markerBeamOn() { const me = G.me; return G.marker && me.alive && (me.phase === 'bus' || me.phase === 'sky'); }
-function drawMarkerBeamLabel() {
-  if (!G.marker || !G.me.alive || G.me.phase === 'dead') return;
-  const m = G.marker, gy = groundH(m.x, m.z), p = project(m.x, gy + 6, m.z, HW, HH);
-  const d = Math.round(hyp(m.x - G.me.x, m.z - G.me.z));
-  if (p && p[0] > 0 && p[0] < HW && p[1] > 0 && p[1] < HH) { drawPin(p[0], p[1], 1); txt(d + ' m', p[0], p[1] + 12, 14, '#ffd83a', 'center'); }
+// your marker plus every human teammate's (shared through the party); a beam shows while its owner is still in the bus or skydiving
+const hexRgb = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+function activeMarkers() {
+  const out = []; if (!G || !G.me) return out;
+  const me = G.me, flying = f => f.alive && (f.phase === 'bus' || f.phase === 'sky');
+  if (G.marker) out.push({ x: G.marker.x, z: G.marker.z, owner: me, css: '#ffd83a', col: [1, .85, .23], beam: flying(me) });
+  for (const f of G.fighters) {
+    if (f === me || f.kind !== 'human' || !f.marker || f.team !== me.team || !f.alive) continue;
+    const css = TEAM_COLS[f.slotIdx % 4];
+    out.push({ x: f.marker.x, z: f.marker.z, owner: f, css, col: hexRgb(css), beam: flying(f) });
+  }
+  return out;
 }
+function markerBeamOn() { return activeMarkers().some(m => m.beam); }
+function drawMarkerBeamLabel() {
+  if (!G.me.alive || G.me.phase === 'dead') return;
+  for (const m of activeMarkers()) {
+    if (!m.beam) continue;
+    const gy = groundH(m.x, m.z), p = project(m.x, gy + 6, m.z, HW, HH);
+    const d = Math.round(hyp(m.x - G.me.x, m.z - G.me.z));
+    if (p && p[0] > 0 && p[0] < HW && p[1] > 0 && p[1] < HH) { drawPin(p[0], p[1], 1, m.css); txt((m.owner === G.me ? '' : m.owner.name + '  ') + d + ' m', p[0], p[1] + 12, 14, m.css, 'center'); }
+  }
+}
+function setMyMarker(m) { G.marker = m; if (G.me) G.me.marker = m; }
 function mapClick(e) {
   const R = G._mapRect; if (!R) return;
   const rect = document.getElementById('hud').getBoundingClientRect();
   const px = e.clientX - rect.left, py = e.clientY - rect.top;
-  if (e.button === 2) { G.marker = null; sfx('click', .3); return; }
+  if (e.button === 2) { setMyMarker(null); sfx('click', .3); return; }
   if (px < R.x || py < R.y || px > R.x + R.sz || py > R.y + R.sz) return;
   const k = R.sz / (HE * 2);
-  G.marker = { x: (px - R.x) / k - HE, z: (py - R.y) / k - HE }; sfx('click', .45);
+  setMyMarker({ x: (px - R.x) / k - HE, z: (py - R.y) / k - HE }); sfx('click', .45);
 }
 
 function drawMoveIcon(k, x, y, w) {
@@ -3449,7 +3567,7 @@ function defaultSave() {
     coins: 0, owned: [], quests: { day: '', list: [] }, questsDone: 0, login: { last: '', streak: 0 } };
 }
 function loadSave() { const a = accountsDB(), u = a.current && a.users[a.current]; App.save = Object.assign(defaultSave(), (u ? u.save : store('agency_save')) || {}); App.user = u ? u.name : null; loadBinds(); }
-function writeSave() { const a = accountsDB(), u = a.current && a.users[a.current]; if (u) { u.save = App.save; store('agency_accounts', a); } else store('agency_save', App.save); }
+function writeSave() { App.save.savedAt = Date.now(); const a = accountsDB(), u = a.current && a.users[a.current]; if (u) { u.save = App.save; store('agency_accounts', a); } else store('agency_save', App.save); }
 function level() { return 1 + Math.floor(App.save.xp / XP_LEVEL); }
 const $ = (h) => { const d = document.createElement('div'); d.innerHTML = h.trim(); return d.firstElementChild; };
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -3507,8 +3625,8 @@ function playCard() {
   const n = Net.members().length;
   const c = $(`<div class="card playbox">
     <h3>MODE</h3>
-    <div class="mode">${['SOLO', 'DUOS', 'SQUADS'].map(m => `<button data-m="${m}" class="${mode === m ? 'on' : ''}" ${inParty ? 'disabled' : ''}>${m}</button>`).join('')}</div>
-    <div class="note">${mode === 'SOLO' ? '50 players, every agent for themselves.' : 'Teams of ' + MODES[mode].team + ': ' + (n > 1 ? n + ' of you' : 'you') + (MODES[mode].team - n > 0 ? ' plus ' + (MODES[mode].team - n) + ' bot teammate' + (MODES[mode].team - n > 1 ? 's' : '') : '') + '.'}</div>
+    <div class="mode mode4">${Object.keys(MODES).map(m => `<button data-m="${m}" class="${mode === m ? 'on' : ''}" ${inParty || MODES[m].team < n ? 'disabled' : ''}>${MODE_LABEL[m]}</button>`).join('')}</div>
+    <div class="note">${mode === 'SOLO' ? '50 players, every agent for themselves.' : MODES[mode].big ? 'Two teams of 25 fight it out: ' + (n > 1 ? 'all ' + n + ' of you are' : 'you are') + ' on BLUE team' + (25 - n > 0 ? ' with ' + (25 - n) + ' bot teammate' + (25 - n > 1 ? 's' : '') : '') + '. Last team standing wins. Parties of up to 25 can play this together.' : 'Teams of ' + MODES[mode].team + ': ' + (n > 1 ? n + ' of you' : 'you') + (MODES[mode].team - n > 0 ? ' plus ' + (MODES[mode].team - n) + ' bot teammate' + (MODES[mode].team - n > 1 ? 's' : '') : '') + '.'}${n > SMALL_PARTY ? ' Parties bigger than 4 play 25 V 25.' : ''}</div>
     <button class="playbtn" id="play">${inParty ? 'READY' : 'PLAY'}</button>
     <div class="note" id="playnote">${inParty ? 'Waiting for the party leader to start.' : Net.role === 'host' && n > 1 ? 'Everyone in your party drops in with you.' : ''}</div>
   </div>`);
@@ -3533,7 +3651,7 @@ function partyCard() {
     return c;
   }
   if (!Net.role) {
-    body.appendChild($(`<div class="note">Play with up to 3 friends against the bots. Start a party, then send your friends the invite link.</div>`));
+    body.appendChild($(`<div class="note">Play with up to 3 friends in Duos or Squads, or bring up to 24 friends to a 25 V 25. Start a party, then send your friends the invite link.</div>`));
     const b = $(`<button class="primary">START A PARTY</button>`); b.onclick = () => { initAudio(); Net.hostParty(); }; body.appendChild(b);
     const j = $(`<div class="row"><input type="text" id="jcode" placeholder="PARTY CODE" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;text-transform:uppercase"><button id="jbtn">${Net.busy ? 'JOINING...' : 'JOIN'}</button></div>`);
     const inp = j.querySelector('#jcode');
@@ -3560,7 +3678,8 @@ function partyCard() {
   } else {
     body.appendChild($(`<div class="note">IN PARTY <b class="code" style="font-size:1.2rem">${esc(Net.code.toUpperCase())}</b></div>`));
   }
-  const list = $(`<div class="col" style="gap:6px"></div>`);
+  const list = $(`<div class="col" style="gap:6px;max-height:260px"></div>`);
+  body.appendChild($(`<div class="note">${Net.members().length} / ${MAX_PARTY} in party</div>`));
   Net.members().forEach((m, i) => list.appendChild($(`<div class="member"><span class="dot" style="background:${TEAM_COLS[i % 4]}"></span><b>${esc(m.name)}${m.me ? ' (you)' : ''}</b><span class="muted">${m.host ? 'LEADER' : 'LVL ' + (m.lvl || 1)}</span></div>`)));
   body.appendChild(list);
   if (Net.members().length < 2) body.appendChild($(`<div class="note">Waiting for friends to join...</div>`));
@@ -3660,19 +3779,21 @@ function finishMatch(left) {
   const place = win ? 1 : me.place || aliveTeams().size;
   const lines = [['Match played', 100], ['Eliminations x' + me.elims, me.elims * 75], ['Chests searched x' + G.stats.chests, G.stats.chests * 20],
     ['Survival', Math.round((G.teams - place) / Math.max(1, G.teams) * 500)]];
-  if (place <= 10) lines.push(['Top 10', 250]);
+  const big = !!(MODES[G.mode] && MODES[G.mode].big);
+  if (place <= 10 && !big) lines.push(['Top 10', 250]);
+  if (big && !win) lines.push(['Team fight', 300]);
   if (win) lines.push(['Victory', 1500]);
   const total = lines.reduce((a, l) => a + Math.max(0, l[1]), 0);
   const s = App.save, oldLv = level();
   s.xp += total; s.matches++; s.elims += me.elims; if (win) s.wins++;
-  const prog = matchProgress({ place, win, elims: me.elims, dmg: Math.round(me.dmgDone), chests: G.stats.chests, builds: G.stats.builds, harvest: G.stats.harvest, heals: G.stats.heals || 0, moves: G.stats.moves || 0, total: G.total || 50 });
+  const prog = matchProgress({ place: big ? (win ? 1 : 26) : place, win, elims: me.elims, dmg: Math.round(me.dmgDone), chests: G.stats.chests, builds: G.stats.builds, harvest: G.stats.harvest, heals: G.stats.heals || 0, moves: G.stats.moves || 0, total: G.total || 50 });
   writeSave();
   Net.leftMatch(left);
   App.state = 'results'; setPointerLock(false);
   const R = { place, win, elims: me.elims, dmg: Math.round(me.dmgDone), time: G.time, lines, total, oldLv, newLv: level(), teams: G.teams };
   const el = $(`<div class="center"><div class="menu results">
     <div class="place">#${R.place}</div>
-    <div style="text-align:center;font-weight:800;font-size:1.3rem;color:${R.win ? 'var(--gold)' : 'var(--text)'}">${R.win ? 'VICTORY!' : 'OUT OF ' + R.teams + (G.teamSize > 1 ? ' TEAMS' : '')}</div>
+    <div style="text-align:center;font-weight:800;font-size:1.3rem;color:${R.win ? 'var(--gold)' : 'var(--text)'}">${R.win ? 'VICTORY!' : big ? 'YOUR TEAM LOST - ' + BIG_TEAM[me.team === 0 ? 1 : 0].name + ' TEAM WON' : 'OUT OF ' + R.teams + (G.teamSize > 1 ? ' TEAMS' : '')}</div>
     <div class="stats"><span>Eliminations</span><span>${R.elims}</span><span>Damage dealt</span><span>${R.dmg}</span><span>Chests searched</span><span>${G.stats.chests}</span>
     <span>Materials gathered</span><span>${G.stats.harvest}</span><span>Time alive</span><span>${fmtTime(R.time)}</span></div>
     <div class="stats" style="border-top:1px solid var(--line);padding-top:10px">${R.lines.filter(l => l[1] > 0).map(l => `<span>${esc(l[0])}</span><span style="color:var(--blue)">+${l[1]} XP</span>`).join('')}</div>
@@ -3794,8 +3915,7 @@ function itemIcon(it) {
     if (k === 'gun') { hctx.save(); hctx.translate(64, 64); hctx.scale(1.7, 1.7); hctx.translate(-64, -64); drawGunIcon(it.k, 64, 60, 60); hctx.restore(); }
     else if (k === 'move') drawMoveIcon(it.k, 64, 64, 84);
     else if (k === 'heal') {
-      const H = HEALS[it.k], c = hctx; c.fillStyle = H.stat === 'hp' ? '#f4f4f4' : '#5bb6ff'; c.beginPath(); c.arc(64, 64, 34, 0, TAU); c.fill();
-      if (H.stat === 'hp') { c.fillStyle = '#e33'; c.fillRect(42, 57, 44, 14); c.fillRect(57, 42, 14, 44); } else { c.fillStyle = 'rgba(255,255,255,.55)'; c.beginPath(); c.arc(54, 52, 10, 0, TAU); c.fill(); }
+      drawHealIcon(it.k, 64, 64, 34);
     }
   } finally { hctx = save; }
   return (_icons[key] = cv.toDataURL());
@@ -3827,9 +3947,9 @@ function invUI() {
       desc = M.desc + ' One click uses it.';
     } else {
       const H = HEALS[pick.k];
-      rows = [['Restores', '+' + H.amt + ' ' + (H.stat === 'sh' ? 'shield' : 'health')], ['Up to', H.cap], ['Use time', H.use + ' s'], ['Stack', pick.n + ' / ' + H.stack]]
+      rows = [['Restores', H.stat === 'both' ? 'All health and shield' : '+' + H.amt + ' ' + (H.stat === 'sh' ? 'shield' : 'health')], ['Up to', H.cap], ['Use time', H.use + ' s'], ['Stack', pick.n + ' / ' + H.stack]]
         .map(([a, b]) => `<div class="fstat"><span>${a}</span><b>${esc(String(b))}</b></div>`).join('');
-      desc = 'Click once with it selected to use it. Switching items or building stops it.';
+      desc = (pick.k === 'CHUG' ? 'Fills your health and shield all the way up. Takes 15 seconds to drink and you move slowly while drinking, so find cover first. ' : '') + 'Click once with it selected to use it. Switching items or building stops it.';
     }
     detail = `<div class="fdetail" style="--rc:${R.col}"><div class="fdart r${itemRar(pick)}"><img src="${itemIcon(pick)}" alt=""></div>
       <div class="fdrar">${R.name.toUpperCase()}</div><div class="fdname">${esc(k === 'gun' ? WEAPONS[pick.k].name : k === 'move' ? MOVES[pick.k].name : HEALS[pick.k].name)}</div>
@@ -3929,6 +4049,52 @@ function afterSignIn(isNew) {
   Net.lobbyChanged();
   uiToast(isNew ? 'ACCOUNT CREATED - WELCOME, ' + App.user.toUpperCase() : 'WELCOME BACK, ' + App.user.toUpperCase());
   checkDaily();
+}
+
+// ---- move an account to another device with a transfer code (no server needed)
+const b64u = { enc: u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); },
+  dec: s => { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); } };
+async function zipText(txt, how) {
+  const S = how === 'gzip' ? new CompressionStream('gzip') : new DecompressionStream('gzip');
+  return new Uint8Array(await new Response(new Blob([txt]).stream().pipeThrough(S)).arrayBuffer());
+}
+async function exportCode() {
+  const a = accountsDB(), u = a.current && a.users[a.current]; if (!u) return null;
+  App.save.savedAt = Date.now(); u.save = App.save; store('agency_accounts', a);
+  const js = JSON.stringify({ v: 1, n: u.name, p: u.pin, c: u.created, s: u.save });
+  try { return 'AGENCY1-' + b64u.enc(await zipText(js, 'gzip')); } catch (e) { return 'AGENCY0-' + b64u.enc(new TextEncoder().encode(js)); }
+}
+async function importCode(code, pin) {
+  const m = String(code || '').replace(/\s+/g, '').match(/AGENCY([01])-([A-Za-z0-9_-]+)/);
+  if (!m) return 'That does not look like a transfer code. It starts with AGENCY1-';
+  let d;
+  try { const raw = b64u.dec(m[2]); d = JSON.parse(m[1] === '1' ? new TextDecoder().decode(await zipText(raw, 'gunzip')) : new TextDecoder().decode(raw)); }
+  catch (e) { return 'That code is broken or cut off. Copy the whole code again.'; }
+  if (!d || !d.n || !d.p || !d.s) return 'That code is broken or cut off. Copy the whole code again.';
+  if (await pinHash(d.n, pin) !== d.p) return 'Wrong PIN for ' + d.n + '.';
+  const a = accountsDB(), key = String(d.n).toLowerCase(), old = a.users[key];
+  const save = Object.assign(defaultSave(), d.s);
+  if (old && old.save && (old.save.savedAt || 0) > (save.savedAt || 0) && (old.save.xp || 0) > (save.xp || 0)) {
+    return 'This device already has newer progress for ' + d.n + '. Use SIGN IN instead.';
+  }
+  a.users[key] = { name: d.n, pin: d.p, created: d.c || Date.now(), save };
+  a.current = key; store('agency_accounts', a);
+  loadSave(); afterSignIn(false);
+  return null;
+}
+function transferMenu() {
+  App.modal = true;
+  const el = $(`<div class="center"><div class="menu" style="width:min(560px,100%)"><h2>USE ON ANOTHER DEVICE</h2>
+    <div class="note">1. Copy this code and send it to yourself (email, Google Docs, Classroom - anywhere you can open on the other device).<br>
+    2. On the other device open the game, press SIGN IN, pick USE A CODE, paste it and type your PIN.<br>
+    Your level, coins, outfits, quests and streak come with it. When you switch back, make a new code there and bring it back the same way.</div>
+    <textarea id="tcode" readonly rows="5" style="width:100%;font:12px monospace;background:#141836;color:#fff;border:2px solid #3a4180;border-radius:8px;padding:8px;resize:none">Making your code...</textarea>
+    <button class="primary" id="tcopy">COPY CODE</button><button id="tclose">CLOSE</button></div></div>`);
+  const ta = el.querySelector('#tcode');
+  exportCode().then(c => { ta.value = c || 'Sign in first.'; });
+  el.querySelector('#tcopy').onclick = () => { ta.select(); const ok = () => uiToast('CODE COPIED'); try { navigator.clipboard.writeText(ta.value).then(ok, () => { document.execCommand('copy'); ok(); }); } catch (e) { document.execCommand('copy'); ok(); } };
+  el.querySelector('#tclose').onclick = () => { App.modal = false; accountMenu(); };
+  setUI(el);
 }
 
 // ---- daily sign-in reward (accounts only), streak of 7
@@ -4034,25 +4200,28 @@ function accountMenu() {
   const a = accountsDB(), names = Object.values(a.users).map(u => u.name);
   const signedIn = !!App.user;
   const el = $(`<div class="center"><div class="menu" style="width:min(460px,100%)"><h2>${signedIn ? 'ACCOUNT' : 'SIGN IN'}</h2>
-    ${signedIn ? `<div class="note" style="text-align:center">Signed in as <b style="color:var(--gold)">${esc(App.user)}</b></div><button id="aout">SIGN OUT</button>` : `
-    <div class="mode"><button id="tin" class="on">SIGN IN</button><button id="tnew">CREATE ACCOUNT</button></div>
+    ${signedIn ? `<div class="note" style="text-align:center">Signed in as <b style="color:var(--gold)">${esc(App.user)}</b></div><button class="primary" id="amove">USE ON ANOTHER DEVICE</button><button id="aout">SIGN OUT</button>` : `
+    <div class="mode mode4"><button id="tin" class="on">SIGN IN</button><button id="tnew">CREATE ACCOUNT</button><button id="tcodeb">USE A CODE</button></div>
+    <label class="note fcol tc" style="display:none">TRANSFER CODE<textarea id="acode" rows="3" spellcheck="false" style="font:12px monospace;background:#141836;color:#fff;border:2px solid #3a4180;border-radius:8px;padding:8px;resize:none" placeholder="Paste the code that starts with AGENCY1-"></textarea></label>
     <label class="note fcol">NAME<input type="text" id="an" maxlength="16" autocomplete="off" spellcheck="false" ${names.length ? `list="anames"` : ''}></label>
     ${names.length ? `<datalist id="anames">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>` : ''}
     <label class="note fcol">PIN (4-8 numbers)<input type="password" id="ap" maxlength="8" inputmode="numeric" autocomplete="off"></label>
     <label class="note keep" style="display:none;flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="akeep" checked> Keep my guest progress (level, coins, outfits)</label>
     <div class="note" id="aerr" style="color:#ff8a7a;min-height:1.2em"></div>
     <button class="primary" id="ago">SIGN IN</button>`}
-    <div class="note">Accounts are saved in this browser on this computer. Don't use a real password here - a short PIN is enough.</div>
+    <div class="note">Accounts are saved in this browser. To play on another device, sign in here, press USE ON ANOTHER DEVICE and take the code with you. Don't use a real password - a short PIN is enough.</div>
     <button id="aclose">CLOSE</button></div></div>`);
   const close = () => { App.modal = false; renderLobby(); };
   el.querySelector('#aclose').onclick = close;
-  if (signedIn) { el.querySelector('#aout').onclick = () => { App.modal = false; signOut(); }; setUI(el); return; }
+  if (signedIn) { el.querySelector('#aout').onclick = () => { App.modal = false; signOut(); }; el.querySelector('#amove').onclick = () => transferMenu(); setUI(el); return; }
   let mode = names.length ? 'in' : 'new';
-  const setMode = m => { mode = m; el.querySelector('#tin').classList.toggle('on', m === 'in'); el.querySelector('#tnew').classList.toggle('on', m === 'new'); el.querySelector('#ago').textContent = m === 'in' ? 'SIGN IN' : 'CREATE ACCOUNT'; el.querySelector('.keep').style.display = m === 'new' ? 'flex' : 'none'; el.querySelector('#aerr').textContent = ''; };
-  el.querySelector('#tin').onclick = () => setMode('in'); el.querySelector('#tnew').onclick = () => setMode('new');
+  const setMode = m => { mode = m; el.querySelector('#tin').classList.toggle('on', m === 'in'); el.querySelector('#tnew').classList.toggle('on', m === 'new'); el.querySelector('#tcodeb').classList.toggle('on', m === 'code');
+    el.querySelector('#ago').textContent = m === 'in' ? 'SIGN IN' : m === 'code' ? 'LOAD MY ACCOUNT' : 'CREATE ACCOUNT'; el.querySelector('.keep').style.display = m === 'new' ? 'flex' : 'none';
+    el.querySelector('.tc').style.display = m === 'code' ? 'flex' : 'none'; el.querySelector('#an').parentElement.style.display = m === 'code' ? 'none' : 'flex'; el.querySelector('#aerr').textContent = ''; };
+  el.querySelector('#tin').onclick = () => setMode('in'); el.querySelector('#tnew').onclick = () => setMode('new'); el.querySelector('#tcodeb').onclick = () => setMode('code');
   const go = async () => {
     const n = el.querySelector('#an').value, p = el.querySelector('#ap').value;
-    const err = mode === 'in' ? await signIn(n, p) : await createAccount(n, p, el.querySelector('#akeep').checked);
+    const err = mode === 'in' ? await signIn(n, p) : mode === 'code' ? await importCode(el.querySelector('#acode').value, p) : await createAccount(n, p, el.querySelector('#akeep').checked);
     if (err) { el.querySelector('#aerr').textContent = err; sfx('hurt', .2); return; }
     if (App.modal && App.ui === el) close();
   };
@@ -4081,13 +4250,13 @@ const Net = {
       out.push({ peer: p.peer, me: p.isMe && p.sameTab, host: pr.role === 'host', name: String(pr.name || 'Agent').slice(0, 16), outfit: OUTFIT_BY[pr.outfit] ? pr.outfit : 'AURUM', lvl: pr.lvl | 0 });
     }
     out.sort((a, b) => (b.host - a.host) || (a.peer < b.peer ? -1 : 1));
-    return out.slice(0, 4);
+    return out.slice(0, MAX_PARTY);
   },
   partyMode() {
     if (this.role === 'member') { const h = this.hostPeer(); const m = h && h.presence.mode; return MODES[m] ? m : 'DUOS'; }
     const n = this.role ? this.members().length : 1;
     let m = App.save.mode;
-    if (n >= 3) m = 'SQUADS'; else if (n === 2 && m === 'SOLO') m = 'DUOS';
+    if (n > SMALL_PARTY) m = '25V25'; else if (n >= 3 && MODES[m].team < n) m = 'SQUADS'; else if (n === 2 && m === 'SOLO') m = 'DUOS';
     return m;
   },
   hostPeer() { return this.room ? this.room.peers().find(p => p.presence && p.presence.role === 'host') : null; },
@@ -4157,6 +4326,7 @@ const Net = {
     if (App.state === 'lobby') {
       for (const p of ch.joined) if (!(p.isMe && p.sameTab) && p.presence && p.presence.role) { sfx('click', .5); }
       clearTimeout(this._rl); this._rl = setTimeout(() => { if (App.state === 'lobby') renderLobby(); }, 120);
+      if (this.role === 'host' && (ch.joined.length || ch.left.length)) this.room.presence(this.myPresence()).catch(() => { });   // friends see the mode change with party size
       // a start we missed as an event is still in the leader's presence
       const h = this.hostPeer();
       if (this.role === 'member' && h && h.presence.match && h.presence.match.no !== this.matchNo) this.onStart({ peer: h.peer, data: h.presence.match, isMe: false });
@@ -4187,7 +4357,7 @@ const Net = {
     if (idx < 0) { uiToast('THE PARTY IS IN A MATCH - YOU WILL JOIN THE NEXT ONE'); return; }
     this.matchNo = d.no; this.host = msg.peer; this.acts = []; this.seq = 0;
     if (App.state === 'results') G = null;
-    beginMatch({ seed: d.seed >>> 0, mode: MODES[d.mode] ? d.mode : 'DUOS', party: d.party.slice(0, 4).map(p => ({ peer: p.peer, name: String(p.name).slice(0, 16), outfit: p.outfit })), meIndex: idx, net: 'client' });
+    beginMatch({ seed: d.seed >>> 0, mode: MODES[d.mode] ? d.mode : 'DUOS', party: d.party.slice(0, MAX_PARTY).map(p => ({ peer: p.peer, name: String(p.name).slice(0, 16), outfit: p.outfit })), meIndex: idx, net: 'client' });
   },
   onEnd(msg) { if (G && G.net === 'client' && msg.data && msg.data.no === this.matchNo && App.state === 'match') finishMatch(true); },
   leftMatch(left) {
@@ -4214,6 +4384,7 @@ function netReviving(f, v) { const pr = peerPresence(f.net); return !!(pr && pr.
 function netApplyRemote(f, dt) {
   const pr = peerPresence(f.net); const st = pr && pr.st;
   if (!st || st.no !== Net.matchNo) { if (f.phase === 'ground') updateVertical(f, dt); return; }
+  f.marker = Array.isArray(st.mk) && isFinite(st.mk[0]) && isFinite(st.mk[1]) ? { x: clamp(+st.mk[0], -HE, HE), z: clamp(+st.mk[1], -HE, HE) } : null;
   if (f.phase === 'bus' && st.ph === 1) jumpFromBus(f);
   if (f.phase !== 'bus') {
     f.x = +st.x || f.x; f.y = +st.y || f.y; f.z = +st.z || f.z;
@@ -4288,7 +4459,7 @@ function netHostTick(dt) {
   Net.snapT -= dt; Net.mineT -= dt; Net.worldT -= dt;
   const friends = G.fighters.filter(f => f.net && f !== G.me);
   if (Net.snapT <= 0) {
-    Net.snapT = 0.12;
+    Net.snapT = friends.length > 8 ? 0.2 : friends.length > 3 ? 0.15 : 0.12;   // fewer updates when the leader has to send to lots of friends
     const S = G.storm;
     const msg = { n: Net.matchNo, t: r1(G.time), b: [r1(G.bus.s), r1(G.bus.t)], st: [S.phase, S.state === 'wait' ? 0 : S.state === 'shrink' ? 1 : 2, r1(S.timer), r1(S.cx), r1(S.cz), r1(S.r), r1(S.ncx), r1(S.ncz), r1(S.nr), S.dmg],
       f: [], d: [], h: G.helis.map(h => [h.id, r1(h.x), r1(h.y), r1(h.z), Math.round(h.yaw * 100) / 100, Math.round(h.spin), h.driver ? h.driver.id : -1]),
@@ -4310,7 +4481,7 @@ function netHostTick(dt) {
     Net.room.emit('s', msg).catch(() => { });
   }
   if (Net.mineT <= 0) {
-    Net.mineT = 0.25;
+    Net.mineT = friends.length > 8 ? 0.4 : 0.25;
     for (const f of friends) {
       const q = (Net.mineQ[f.net] || []).splice(0, 20);
       const pk = [];
@@ -4320,7 +4491,7 @@ function netHostTick(dt) {
         ki: f.killer || '', q, pk, pr: [r1(f.x), r1(f.z)] };
       let s = JSON.stringify(m);
       while (s.length > 3950 && m.pk.length) { m.pk.length = Math.floor(m.pk.length / 2); s = JSON.stringify(m); }
-      Net.room.emit('m', m).catch(() => { });
+      (Net.room.emitTo ? Net.room.emitTo(f.net, 'm', m) : Net.room.emit('m', m)).catch(() => { });
     }
   }
   if (Net.worldT <= 0) {
@@ -4332,7 +4503,7 @@ function netHostTick(dt) {
     const per = 110, chunks = Math.max(1, Math.ceil(all.length / per));
     Net.buildCycle = (Net.buildCycle + 1) % chunks;
     const part = all.slice(Net.buildCycle * per, Net.buildCycle * per + per).map(b => [b.ix, b.iz, b.lv, PIECES.indexOf(b.piece), b.dir === 'x' ? 4 : b.dir === 'z' ? 5 : b.dir, MAT_ORDER.indexOf(b.mat), Math.round(b.hp / b.maxhp * 100), Math.round(b.prog * 100), b.edit | 0]);
-    const m = { n: Net.matchNo, pd: G.pads.map(p => [r1(p.x), r1(p.y), r1(p.z)]), c: bits(ch), x: bits(bx), p: G.propDead.slice(-700).map(v => v.toString(36)).join(','), bc: [Net.buildCycle, chunks, G.buildVer], b: part };
+    const m = { n: Net.matchNo, mk: G.fighters.filter(f => f.kind === 'human' && f.marker).map(f => [f.id, r1(f.marker.x), r1(f.marker.z)]), pd: G.pads.map(p => [r1(p.x), r1(p.y), r1(p.z)]), c: bits(ch), x: bits(bx), p: G.propDead.slice(-700).map(v => v.toString(36)).join(','), bc: [Net.buildCycle, chunks, G.buildVer], b: part };
     let s = JSON.stringify(m);
     while (s.length > 3950 && m.b.length) { m.b.length = Math.floor(m.b.length * 0.7); s = JSON.stringify(m); }
     Net.room.emit('w', m).catch(() => { });
@@ -4434,6 +4605,10 @@ Net.onWorld = function (msg) {
   const m = msg.data;
   if (!G || G.net !== 'client' || !m || m.n !== Net.matchNo) return;
   const unbits = (s, n) => { const out = []; for (let i = 0; i < s.length; i++) { const v = s.charCodeAt(i) - 48; for (let j = 0; j < 6; j++) out.push((v >> j) & 1); } return out.slice(0, n); };
+  if (Array.isArray(m.mk)) {
+    const got = new Map(m.mk.filter(a => Array.isArray(a)).map(a => [a[0], { x: +a[1], z: +a[2] }]));
+    for (const f of G.fighters) if (f !== G.me) f.marker = got.get(f.id) || null;
+  }
   if (Array.isArray(m.pd)) G.pads = m.pd.slice(0, 30).map(a => { const o = G.pads.find(q => Math.abs(q.x - a[0]) < .2 && Math.abs(q.z - a[2]) < .2); return { x: +a[0], y: +a[1], z: +a[2], life: 99, squish: o ? o.squish : 0 }; });
   unbits(m.c, G.chests.length).forEach((b, i) => { if (b) G.chests[i].opened = true; });
   unbits(m.x, G.boxes.length).forEach((b, i) => { if (b) G.boxes[i].opened = true; });
@@ -4502,7 +4677,8 @@ function clientUpdate(dt) {
       ph: me.phase === 'bus' ? 0 : me.phase === 'sky' ? 1 : 2, gl: me.glide ? 1 : 0, sw: me.swim ? 1 : 0, gr: me.grounded ? 1 : 0, sel: me.sel, bm: me.buildMode ? 1 : 0, ads: me.ads ? 1 : 0,
       mv: Math.round(me.moveAmt * 10) / 10, fire: Input.mb[0] && Input.locked && !me.buildMode ? 1 : 0, aim: [r1(Cam.aim[0]), r1(Cam.aim[1]), r1(Cam.aim[2])],
       e: kd('use') ? 1 : 0, rv: interactTarget && interactTarget.kind === 'revive' ? interactTarget.obj.id : -1,
-      veh: h ? [h.id, r1(h.x), r1(h.y), r1(h.z), Math.round(h.yaw * 100) / 100, r1(h.vx), r1(h.vz), Math.round(h.spin)] : null, acts: Net.acts };
+      veh: h ? [h.id, r1(h.x), r1(h.y), r1(h.z), Math.round(h.yaw * 100) / 100, r1(h.vx), r1(h.vz), Math.round(h.spin)] : null, acts: Net.acts,
+      mk: G.marker ? [r1(G.marker.x), r1(G.marker.z)] : 0 };
     Net.room.presence(Object.assign(Net.myPresence(), { st })).catch(() => { });
   }
 }
@@ -4650,6 +4826,10 @@ class P2PRoom {
     (this.topic[topic] || []).forEach(f => { try { f(msg); } catch (e) { console.error(e); } });
     return Promise.resolve();
   }
+  emitTo(peer, topic, data) {   // one friend only (saves the leader's upload in big parties)
+    if (!this.isHost) return Promise.reject({ code: 'not_permitted' });
+    this.sendTo(peer, { t: 'e', topic, data, peer: this.me }); return Promise.resolve();
+  }
   on(topic, f) { (this.topic[topic] = this.topic[topic] || []).push(f); return () => { }; }
   presence(patch) {
     const cur = Object.assign({}, this.pres[this.me], patch);
@@ -4684,7 +4864,7 @@ const P2P = {
     const early = {};
     sig.on('OFFER', async m => {
       const src = m.src; const sdp = sdpOf(m.payload); if (!src || typeof sdp !== 'string') return; const cid = m.payload.connectionId || 'dc_game';
-      if (Object.keys(room.chans).length >= 3) return;          // party is full
+      if (Object.keys(room.chans).length >= MAX_PARTY - 1) return;          // party is full
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
       room.pcs[src] = pc;
       pc.onicecandidate = e => { if (e.candidate) sig.send('CANDIDATE', src, { candidate: candJSON(e.candidate), type: 'data', connectionId: cid }); };
