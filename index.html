@@ -946,6 +946,7 @@ function buildWorld() {
   for (const c of W.chests) if (c.y === undefined) c.y = groundH(c.x, c.z);
   for (const l of W.loot) if (l.y === undefined) l.y = groundH(l.x, l.z);
   for (const a of W.ammo) a.y = groundH(a.x, a.z);
+  placeVans();
   // chests are small solid crates of their own
 }
 
@@ -1098,7 +1099,7 @@ let _fid = 0, _pid = 0;
 
 function rollRar(rng, table) { let r = rng.next(); for (let i = 0; i < table.length; i++) { if (r < table[i]) return i; r -= table[i]; } return 0; }
 function makeGun(k, r) { return { k, r, mag: WEAPONS[k].mag }; }
-function itemKind(it) { if (!it) return null; if (WEAPONS[it.k]) return 'gun'; if (HEALS[it.k]) return 'heal'; if (MOVES[it.k]) return 'move'; if (it.k === 'AMMO') return 'ammo'; if (it.k === 'MAT') return 'mat'; return 'other'; }
+function itemKind(it) { if (!it) return null; if (WEAPONS[it.k]) return 'gun'; if (HEALS[it.k]) return 'heal'; if (MOVES[it.k]) return 'move'; if (it.k === 'CARD') return 'card'; if (it.k === 'AMMO') return 'ammo'; if (it.k === 'MAT') return 'mat'; return 'other'; }
 function itemName(it) {
   const k = itemKind(it);
   if (k === 'gun') return RARITY[it.r].name + ' ' + WEAPONS[it.k].name;
@@ -1196,6 +1197,7 @@ function newMatch(opt) {
   // helicopters
   W.helis.forEach((h, i) => G.helis.push({ id: i, x: h.x, y: h.y, z: h.z, yaw: rng.range(0, TAU), vx: 0, vz: 0, vy: 0, driver: null, spin: 0, rotor: 0 }));
   G.storm.cx = 0; G.storm.cz = 0;
+  initVans();
   toast('THE BUS DOORS OPEN SOON', 3);
 }
 function spawnFloorLoot(l, rng) {
@@ -1488,6 +1490,8 @@ function eliminate(v, att, weapon, storm) {
   // a team that only has knocked players left is wiped
   const mates = teammates(v);
   if (mates.length && mates.every(o => o.knocked)) for (const o of mates) eliminate(o, o.knockedBy, 'Knocked', !o.knockedBy);
+  dropCarried(v);
+  if (weapon !== 'Left') dropCard(v, v.x, v.y, v.z);
   if (!teammates(v).length) { const left = aliveTeams().size; for (const o of G.fighters) if (o.team === v.team && o.place === 0) o.place = left + 1; }
   checkEnd();
 }
@@ -1926,6 +1930,193 @@ function shockwave(x, y, z) {
   }
 }
 // =====================================================================
+//  Reboot vans and reboot cards (team modes)
+//  When an agent is eliminated and a teammate is still alive, they drop a
+//  reboot card. A teammate grabs it (just walk over it), carries it to a
+//  reboot van and holds the use key to bring them back. Vans recharge after.
+// =====================================================================
+const REBOOT_T = 10, VAN_CD = 120, CARD_TTL = 90;
+
+// ---- world: one van near most towns (same spots on every computer)
+function placeVans() {
+  const rng = new RNG(4242); W.vans = [];
+  for (const P of POIS) {
+    for (let tries = 0; tries < 60; tries++) {
+      const a = rng.range(0, TAU), d = P.r + rng.range(6, 24), x = P.x + Math.cos(a) * d, z = P.z + Math.sin(a) * d;
+      if (!onLand(x, z) || shoreDist(x, z) < 14) continue;
+      const along = rng.chance(.5) ? 'x' : 'z', hx = along === 'x' ? 2.7 : 1.2, hz = along === 'x' ? 1.2 : 2.7;
+      const g = groundH(x, z); let ok = true;
+      for (const [ox, oz] of [[-hx, -hz], [hx, -hz], [-hx, hz], [hx, hz]]) if (Math.abs(groundH(x + ox, z + oz) - g) > .6) ok = false;
+      if (!ok || blockedAt(x, z, 4.2, g) || supportH(x, z, g + 20) > g + 0.3) continue;
+      if (W.vans.some(v => hyp(v.x - x, v.z - z) < 70)) continue;
+      W.vans.push({ x, z, y: g, along, hx, hz });
+      addBox(x - hx, g, z - hz, x + hx, g + 2.45, z + hz, { van: true, col: [.93, .94, .96] });
+      break;
+    }
+  }
+}
+// static details baked into the town mesh: wheels, windows, blue stripe, roof sign
+function vanGeometry(g) {
+  for (const v of W.vans || []) {
+    const X = v.along === 'x', y = v.y;
+    // local frame: f = along the van (+ is the front), s = across
+    const box = (f0, f1, s0, s1, y0, y1, col) => X ? g.box(v.x + f0, y + y0, v.z + s0, v.x + f1, y + y1, v.z + s1, col) : g.box(v.x + s0, y + y0, v.z + f0, v.x + s1, y + y1, v.z + f1, col);
+    const L = 2.7, Wd = 1.2, tire = [.08, .08, .09], glass = [.12, .18, .3], blue = [.16, .45, .95], dark = [.2, .22, .26];
+    for (const f of [-1.8, 1.7]) for (const s of [-1, 1]) box(f - .38, f + .38, s * Wd - (s > 0 ? .1 : -.1) - .02, s * Wd + (s > 0 ? .12 : -.12), -.02, .72, tire);
+    box(L - .02, L + .04, -1.0, 1.0, 1.25, 2.15, glass);            // windscreen
+    box(L - .02, L + .06, -.9, .9, .35, .9, dark);                   // grille
+    box(-L - .04, -L + .02, -1.0, 1.0, .6, 2.1, [.82, .84, .88]);    // back doors
+    for (const s of [-1, 1]) {
+      box(1.5, 2.55, s * Wd - .03, s * Wd + .03, 1.35, 2.1, glass);  // side windows
+      box(-2.6, 2.6, s * Wd - .035, s * Wd + .035, .85, 1.15, blue); // stripe
+    }
+    box(-.9, .9, -.75, .75, 2.45, 2.62, dark);                        // roof sign base
+    box(-.7, .7, -.12, .12, 2.62, 3.35, blue);                        // sign
+    box(-.55, .55, -.14, .14, 2.75, 3.2, [.85, .95, 1]);              // sign face
+  }
+}
+
+// ---- match state
+function initVans() { G.vans = (W.vans || []).map((v, i) => ({ id: i, x: v.x, z: v.z, y: v.y, along: v.along, hx: v.hx, hz: v.hz, cd: 0, prog: 0 })); }
+function vanDist(f, v) { const dx = Math.max(0, Math.abs(f.x - v.x) - v.hx), dz = Math.max(0, Math.abs(f.z - v.z) - v.hz); return hyp(dx, dz); }
+function fighterById(id) { const f = G.fighters[id]; return f && f.id === id ? f : G.fighters.find(o => o.id === id) || null; }
+function hasCards(f) { return !!((f.cards && f.cards.length) || f.cardsN > 0); }
+function isCard(p) { return p.item && p.item.k === 'CARD'; }
+function dropCard(owner, x, y, z, ttl) {
+  if (G.teamSize <= 1 || G.over) return;
+  if (!G.fighters.some(o => o.alive && o.team === owner.team && o !== owner)) return;
+  addPickup(x, y, z, { k: 'CARD', of: owner.id, t: G.time + (ttl || CARD_TTL) }, 0.8);
+}
+// a carrier who is eliminated drops the cards they had
+function dropCarried(f) {
+  if (!f.cards || !f.cards.length) return;
+  for (const id of f.cards) { const o = fighterById(id); if (o && !o.alive) dropCard(o, f.x + (Math.random() - .5), f.y, f.z + (Math.random() - .5), 60); }
+  f.cards = [];
+}
+function takeCard(f, p) {
+  const o = fighterById(p.item.of); removePickup(p); if (!o) return;
+  (f.cards = f.cards || []).push(o.id);
+  if (f.kind === 'human') { toastFor(f, 'GOT ' + o.name.toUpperCase() + "'S REBOOT CARD - TAKE IT TO A REBOOT VAN", '#5bc8ff'); sfxFor(f, 'pickup', .6); }
+  if (o.kind === 'human') toastFor(o, f.name.toUpperCase() + ' HAS YOUR REBOOT CARD', '#5bc8ff');
+  feed(f.name + ' picked up ' + o.name + "'s reboot card", f.team === G.me.team);
+}
+function cardStatus(o) {
+  if (!o || o.alive || G.teamSize <= 1) return 0;
+  for (const p of G.pickups) if (isCard(p) && p.item.of === o.id) return [1, Math.max(0, Math.ceil(p.item.t - G.time))];
+  for (const f of G.fighters) if (f.alive && f.cards && f.cards.includes(o.id)) return [o.rebootP > 0 ? 3 : 2, f.name, Math.round((o.rebootP || 0) * 100) / 100];
+  return 0;
+}
+function rebootingAt(f, v) {
+  if (f === G.me) return kd('use') && interactTarget && interactTarget.kind === 'reboot' && interactTarget.obj === v;
+  if (f.kind === 'bot') return f.goalKind === 'reboot' && f.van === v && !f.target;
+  if (f.net) return netRebooting(f, v);
+  return false;
+}
+// host only
+function updateReboots(dt) {
+  if (!G.vans || G.teamSize <= 1) return;
+  for (let i = G.pickups.length - 1; i >= 0; i--) {
+    const p = G.pickups[i]; if (!isCard(p)) continue;
+    const o = fighterById(p.item.of);
+    const expired = G.time > p.item.t;
+    if (!o || o.alive || expired || !G.fighters.some(q => q.alive && q.team === o.team)) { removePickup(p); if (o && !o.alive && expired) feed(o.name + "'s reboot card expired", o.team === G.me.team); continue; }
+    if (p.delay > 0) continue;
+    for (const f of G.fighters) if (f.alive && f.phase === 'ground' && !f.knocked && f.team === o.team && Math.abs(f.x - p.x) < 1.6 && Math.abs(f.z - p.z) < 1.6 && Math.abs(f.y - p.y) < 2.2) { takeCard(f, p); break; }
+  }
+  for (const f of G.fighters) if (!f.alive) f.rebootP = 0;
+  for (const v of G.vans) {
+    if (v.cd > 0) { v.cd = Math.max(0, v.cd - dt); v.prog = 0; continue; }
+    const users = G.fighters.filter(f => f.alive && f.phase === 'ground' && !f.knocked && f.cards && f.cards.length && vanDist(f, v) < 2.4 && rebootingAt(f, v));
+    if (!users.length) { v.prog = Math.max(0, v.prog - dt * 3); continue; }
+    if (v.prog === 0) sfxAt('search', v.x, v.y + 1, v.z);
+    v.prog += dt;
+    for (const u of users) for (const id of u.cards) { const o = fighterById(id); if (o && !o.alive) { o.rebootP = v.prog / REBOOT_T; o.rebootBy = u.name; } }
+    if (v.prog >= REBOOT_T) doReboot(v, users);
+  }
+}
+function doReboot(v, users) {
+  const back = [];
+  for (const u of users) { for (const id of u.cards) { const o = fighterById(id); if (o && !o.alive && !back.includes(o)) back.push(o); } u.cards = []; }
+  v.prog = 0; v.cd = VAN_CD;
+  back.forEach((o, i) => rebootFighter(o, v, i));
+  sfxAt('shield', v.x, v.y + 2, v.z); sfxAt('heal', v.x, v.y + 2, v.z);
+  for (let i = 0; i < 30; i++) G.parts.push({ x: v.x + (Math.random() - .5) * 3, y: v.y + 2 + Math.random() * 3, z: v.z + (Math.random() - .5) * 3, vx: (Math.random() - .5) * 2, vy: 4 + Math.random() * 5, vz: (Math.random() - .5) * 2, col: [.35, .7, 1], life: 1.2, size: .25, g: -2 });
+  const names = back.map(o => o.name);
+  for (const u of users) if (u.kind === 'human') toastFor(u, 'REBOOTED ' + names.join(', ').toUpperCase(), '#5bc8ff');
+  if (back.length) feed(users[0].name + ' rebooted ' + names.join(', '), users[0].team === G.me.team);
+}
+function rebootFighter(o, v, i) {
+  const a = i * 2.1 + 0.5;
+  o.alive = true; o.knocked = false; o.phase = 'sky'; o.glide = false; o.vy = 0; o.vehicle = null;
+  o.x = v.x + Math.cos(a) * 4; o.z = v.z + Math.sin(a) * 4; o.y = v.y + 60;
+  o.hp = 100; o.sh = 0; o.place = 0; o.killer = null; o.using = false; o.reloadT = 0; o.reviveT = 0; o.knockedBy = null;
+  o.rebootP = 0; o.target = null; o.aggro = null; o.cards = []; o.goal = null; o.goalKind = null; o.landTarget = [o.x + 6, o.z + 6];
+  o.slots = [makeGun('PISTOL', 0), null, null, null, null]; o.sel = 0; o.ammo.L = Math.max(o.ammo.L, 36); o.mats.WOOD = Math.max(o.mats.WOOD, 50);
+  o.rebootNo = (o.rebootNo | 0) + 1;
+  if (o === G.me) { G.spectate = null; G.deathT = 0; toast("YOU'VE BEEN REBOOTED!", 3.5, '#5bc8ff'); sfx('shield', .6); matchUI(); }
+  else if (o.net) netMine(o, 'rb', [Math.round(o.x * 10) / 10, Math.round(o.y * 10) / 10, Math.round(o.z * 10) / 10, o.rebootNo]);
+}
+// a friend's own game when the leader says they're back
+function clientRebooted(v) {
+  const me = G.me; if (me.alive) return;
+  me.alive = true; me.knocked = false; me.phase = 'sky'; me.glide = false; me.vy = 0; me.vehicle = null;
+  me.x = +v[0]; me.y = +v[1]; me.z = +v[2]; me.rebootNo = v[3] | 0; me.hp = 100; me.sh = 0; me.place = 0; me.killer = null;
+  G.spectate = null; G.deathT = 0; toast("YOU'VE BEEN REBOOTED!", 3.5, '#5bc8ff'); sfx('shield', .6); matchUI();
+}
+
+// ---- bots: grab teammates' cards and take them to the nearest working van
+function botReboot(b) {
+  if (G.teamSize <= 1 || !G.vans) return false;
+  if (b.cards && b.cards.length) {
+    let best = null, bd = 450;
+    for (const v of G.vans) { if (v.cd > 25) continue; const d = hyp(v.x - b.x, v.z - b.z); if (d < bd && inCircle(v.x, v.z, G.storm.cx, G.storm.cz, G.storm.r)) { bd = d; best = v; } }
+    if (best) { const side = best.along === 'x' ? [0, best.hz + 1.2] : [best.hx + 1.2, 0]; b.goal = [best.x + side[0], best.z + side[1]]; b.goalKind = 'reboot'; b.van = best; return true; }
+    return false;
+  }
+  for (const p of G.pickups) {
+    if (!isCard(p)) continue;
+    const o = fighterById(p.item.of);
+    if (!o || o.team !== b.team || o === b || hyp(p.x - b.x, p.z - b.z) > 220) continue;
+    b.goal = [p.x, p.z]; b.goalKind = 'card'; b.loot = p; return true;
+  }
+  return false;
+}
+
+// ---- drawing (dynamic parts; the van body is in the static mesh)
+function drawRebootFx(t, ex, ez) {
+  if (!G.vans) return;
+  const teamPlay = G.teamSize > 1;
+  for (const v of G.vans) {
+    if ((v.x - ex) ** 2 + (v.z - ez) ** 2 > 260 * 260) continue;
+    const ready = v.cd <= 0, busy = v.prog > 0, pulse = .7 + .3 * Math.sin(t * (busy ? 12 : 3));
+    const c = ready ? [.3, .65, 1] : [1, .3, .25];
+    S3.fx.push(v.x, v.y + 3.05, v.z, 0, v.along === 'x' ? 1.6 : .4, .9, v.along === 'x' ? .4 : 1.6, c[0], c[1], c[2], (ready ? .5 : .25) * pulse);
+    if (ready && teamPlay) {
+      // blue hologram ring that shows the van is ready
+      for (let k = 0; k < 6; k++) { const a = k / 6 * TAU + t * .8; S3.fx.push(v.x + Math.cos(a) * 3.6, v.y + .06, v.z + Math.sin(a) * 3.6, -a, .9, .05, .25, c[0], c[1], c[2], .5); }
+    }
+    if (busy) {
+      const k = Math.min(1, v.prog / REBOOT_T);
+      S3.fx.push(v.x, v.y + 3.4 + k * 20, v.z, t * 2, .35, 40 * k + .5, .35, .25, .55, 1, .22 + .1 * pulse);
+      for (let r = 0; r < 3; r++) { const h = ((t * 1.5 + r / 3) % 1) * 3; S3.fx.push(v.x, v.y + .2 + h, v.z, t, v.hx * 2 + .6, .05, v.hz * 2 + .6, .3, .6, 1, .35 * (1 - h / 3)); }
+    }
+  }
+}
+function pushCardModel(L, x, y, z, yaw, owner, t) {
+  const col = owner ? hexRgb(TEAM_COLS[owner.slotIdx % 4]) : [.4, .7, 1];
+  L.push(x, y, z, yaw, .5, .7, .04, .12, .3, .75, 1);
+  L.push(x, y + .08, z, yaw, .36, .36, .05, col[0], col[1], col[2], 1);
+  L.push(x, y - .24, z, yaw, .36, .06, .05, .9, .95, 1, 1);
+}
+function drawVanIcon(x, y, sz, ready) {
+  const c = hctx; c.save(); c.translate(x, y);
+  c.fillStyle = ready ? '#3d8bff' : '#a33'; c.strokeStyle = '#fff'; c.lineWidth = 1.5;
+  c.beginPath(); c.roundRect ? c.roundRect(-sz, -sz * .6, sz * 2, sz * 1.2, 3) : c.rect(-sz, -sz * .6, sz * 2, sz * 1.2); c.fill(); c.stroke();
+  c.fillStyle = '#fff'; c.beginPath(); c.arc(-sz * .5, sz * .6, sz * .28, 0, TAU); c.arc(sz * .5, sz * .6, sz * .28, 0, TAU); c.fill();
+  c.fillStyle = '#fff'; c.font = 'bold ' + Math.round(sz * .9) + 'px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('↺', 0, -sz * .02);
+  c.restore();
+}
+// =====================================================================
 //  Bots
 // =====================================================================
 function updateDirector() {
@@ -2012,6 +2203,7 @@ function botThink(b) {
   const mates = teammates(b);
   const down = mates.find(o => o.knocked && hyp(o.x - b.x, o.z - b.z) < 60);
   if (down) { b.goal = [down.x, down.z]; b.goalKind = 'revive'; b.reviving = down; return; }
+  if (botReboot(b)) return;
   if (b.follow) {
     const lead = G.fighters.find(o => o.team === b.team && o.kind === 'human' && o.alive) || null;
     if (lead && lead.phase === 'ground' && hyp(lead.x - b.x, lead.z - b.z) > 12) { const a = b.slotIdx * 2.1; b.goal = [lead.x + Math.cos(a) * 4, lead.z + Math.sin(a) * 4]; b.goalKind = 'follow'; return; }
@@ -2091,6 +2283,7 @@ function updateBot(b, dt) {
       } else b.openT = 0;
       if (b.goalKind === 'follow' && d < 5) mx = mz = 0;
       if (b.goalKind === 'revive' && b.reviving && d < 2.2) mx = mz = 0;
+      if (b.goalKind === 'reboot' && b.van && vanDist(b, b.van) < 2) { mx = mz = 0; b.yaw = Math.atan2(b.van.x - b.x, b.van.z - b.z); }
     }
     if (b.sel < 0 || !b.cur()) botPickWeapon(b, 30);
   }
@@ -2148,6 +2341,7 @@ function findInteract(f) {
   if (f.vehicle) return { kind: 'exit', obj: f.vehicle };
   if (f.knocked || f.phase !== 'ground') return null;
   for (const o of teammates(f)) if (o.knocked && hyp(o.x - f.x, o.z - f.z) < 2.6 && Math.abs(o.y - f.y) < 2) return { kind: 'revive', obj: o };
+  if (G.vans && G.teamSize > 1) for (const v of G.vans) if (vanDist(f, v) < 2.4 && Math.abs(v.y - f.y) < 2.5) return { kind: hasCards(f) ? 'reboot' : 'van', obj: v };
   let best = null, bd = 2.6;
   for (const h of G.helis) { if (h.driver) continue; const d = hyp(h.x - f.x, h.z - f.z) - 1.5; if (d < bd && Math.abs(h.y - f.y) < 2.5) { bd = d; best = { kind: 'heli', obj: h }; } }
   for (const c of G.chests) { if (c.opened) continue; const d = hyp(c.x - f.x, c.z - f.z); if (d < bd && Math.abs(c.y - f.y) < 2) { bd = d; best = { kind: 'chest', obj: c }; } }
@@ -2155,7 +2349,7 @@ function findInteract(f) {
   if (!best || best.kind === 'heli') {
     let pd = 2.2;
     for (const p of G.pickups) {
-      const k = itemKind(p.item); if (k === 'ammo' || k === 'mat' || p.delay > 0) continue;
+      const k = itemKind(p.item); if (k === 'ammo' || k === 'mat' || k === 'card' || p.delay > 0) continue;
       const d = hyp(p.x - f.x, p.z - f.z); if (d < pd && Math.abs(p.y - f.y) < 2) { pd = d; best = { kind: 'pickup', obj: p }; }
     }
   }
@@ -2240,7 +2434,7 @@ function controlLocal(dt) {
   const ox = f.x, oz = f.z;
   if (il > 0) { moveFighter(f, ix * speed, iz * speed, dt); f.emote = 0; }
   f.moveAmt = hyp(f.x - ox, f.z - oz) / dt / RUN;
-  if (f.moveAmt > 0.3 && f.grounded) { f.stepT = (f.stepT || 0) - dt * speed / RUN; if (f.stepT <= 0) { f.stepT = 0.36; sfx(f.swim ? 'swim' : 'step', 0.18); } }
+  if (f.moveAmt > 0.3 && f.grounded) { f.stepT = (f.stepT || 0) - dt * speed / RUN; if (f.stepT <= 0) { f.stepT = 0.36; if (f.swim) sfx('swim', 0.14); else { const hard = f.y > groundH(f.x, f.z) + 0.15; sfx('step_' + (hard ? 'h' : 'g') + Math.floor(Math.random() * 4), (speed > RUN ? 0.085 : 0.06) * (0.8 + Math.random() * 0.4)); } } }
   if (tp('jump') && f.grounded && !f.swim && !f.knocked) { f.vy = JUMP_V; f.grounded = false; sfx('jump', 0.25); }
   // fire / build / heal
   const lmb = Input.mb[0] && Input.locked;
@@ -2403,6 +2597,7 @@ function updateMatch(dt) {
   }
   if (G.me.alive && G.me.phase !== 'dead') controlLocal(dt);
   updateRevives(dt);
+  updateReboots(dt);
   for (const h of G.helis) {
     if (h.driver && (!h.driver.alive || h.driver.vehicle !== h)) h.driver = null;
     if (!h.driver) updateHeli(h, dt, null);
@@ -2423,10 +2618,13 @@ function updateRevives(dt) {
     let helped = false;
     for (const o of teammates(v)) {
       if (o.knocked || o.phase !== 'ground' || hyp(o.x - v.x, o.z - v.z) > 2.6) continue;
-      if (o.kind === 'bot' && !o.target) helped = true;
-      if (o === G.me && kd('use') && interactTarget && interactTarget.obj === v) helped = true;
-      if (o.net && o !== G.me && netReviving(o, v)) helped = true;
+      let h = false;
+      if (o.kind === 'bot' && !o.target) h = true;
+      if (o === G.me && kd('use') && interactTarget && interactTarget.obj === v) h = true;
+      if (o.net && o !== G.me && netReviving(o, v)) h = true;
+      if (h && !helped) { helped = true; v.revivedBy = o.name; }
     }
+    if (!helped) v.revivedBy = '';
     if (helped) { v.reviveT += dt; if (v.reviveT >= REVIVE_T) revive(v); } else v.reviveT = Math.max(0, v.reviveT - dt * 0.5);
   }
 }
@@ -2556,10 +2754,11 @@ function buildScene() {
     const g = new Geo();
     for (const b of W.boxes) {
       const H = b.house;
-      let col = [.6, .6, .62];
+      let col = b.col || [.6, .6, .62];
       if (H) col = b.mat === 'roof' ? H.roof : H.wall;
       g.box(b.x0, b.y0, b.z0, b.x1, b.y1, b.z1, col, { bottom: b.mat === 'roof', side: b.mat === 'roof' ? mixc(col, [0, 0, 0], .25) : col });
     }
+    vanGeometry(g);
     // windows, door frames and trims
     for (const H of W.houses) {
       const win = [.16, .22, .35], frame = [.95, .95, .95], y = H.y;
@@ -2933,6 +3132,7 @@ function renderScene(t, quality) {
     if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > 90 * 90) continue;
     const k = itemKind(p.item), bobY = p.y + 0.35 + Math.sin(t * 2 + p.id) * 0.08;
     if (k === 'gun') pushGun(L, p.item.k, p.item.r, p.x, bobY + .12, p.z, p.spin, 0, 1.15, false, t);
+    else if (k === 'card') pushCardModel(L, p.x, bobY + .3, p.z, p.spin, fighterById(p.item.of), t);
     else if (k === 'heal' && p.item.k === 'CHUG') pushChug(L, p.x, bobY - .05, p.z, p.spin, 1.1, 0);
     else if (k === 'heal') { const H = HEALS[p.item.k]; const c = H.stat === 'hp' ? [1, .95, .95] : [.4, .7, 1]; L.push(p.x, bobY, p.z, p.spin, .32, .32, .32, c[0], c[1], c[2], 1); if (H.stat === 'hp') L.push(p.x, bobY, p.z, p.spin, .34, .1, .1, 1, .2, .2, 1); }
     else if (k === 'ammo') { const c = AMMO[p.item.a].col; L.push(p.x, p.y + .15, p.z, p.spin * .2, .45, .3, .3, c[0], c[1], c[2], 1); }
@@ -3018,13 +3218,14 @@ function renderScene(t, quality) {
   // floor loot glows in its rarity colour (a soft light column and a ring on the ground)
   const lootR2 = 70 * 70;
   for (const p of G.pickups) {
-    const k = itemKind(p.item); if (k !== 'gun' && k !== 'heal' && k !== 'move') continue;
-    if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > lootR2) continue;
-    const r = itemRar(p.item), c = RARITY[r].rgb, a = (r === 0 ? .55 : 1) * (0.8 + 0.2 * Math.sin(t * 3 + p.id));
+    const k = itemKind(p.item); if (k !== 'gun' && k !== 'heal' && k !== 'move' && k !== 'card') continue;
+    if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > (k === 'card' ? 4 : 1) * lootR2) continue;
+    const r = k === 'card' ? 3 : itemRar(p.item), c = k === 'card' ? [.3, .62, 1] : RARITY[r].rgb, a = (r === 0 ? .55 : 1) * (0.8 + 0.2 * Math.sin(t * 3 + p.id));
     S3.fx.push(p.x, p.y + 1.1, p.z, t * .6, .36, 2.2, .36, c[0], c[1], c[2], .2 * a);
     S3.fx.push(p.x, p.y + .7, p.z, -t * .8, .18, 1.4, .18, c[0], c[1], c[2], .35 * a);
     S3.fx.push(p.x, p.y + .04, p.z, t * .4, 1.3, .03, 1.3, c[0], c[1], c[2], .4 * a);
   }
+  drawRebootFx(t, ex, ez);
   // drop marker beams (yours and your teammates'): no fog so you can see them from the bus; each stays until its owner lands
   for (const mk of activeMarkers()) {
     if (!mk.beam) continue;
@@ -3125,7 +3326,8 @@ function drawHud(dt, t) {
     const p = project(f.x, f.y + 2.25, f.z, HW, HH); if (!p) continue;
     txt(f.name, p[0], p[1], 15, mate ? TEAM_COLS[f.slotIdx % 4] : '#ffffff', 'center');
     if (!mate) { rrect(p[0] - 30 * s, p[1] + 9 * s, 60 * s, 6 * s, 2, 'rgba(0,0,0,.6)'); rrect(p[0] - 30 * s, p[1] + 9 * s, 60 * s * f.hp / 100, 3 * s, 1, '#7be38b'); rrect(p[0] - 30 * s, p[1] + 12 * s, 60 * s * f.sh / 100, 3 * s, 1, '#5bc8ff'); }
-    if (mate && f.knocked) txt('KNOCKED  ' + Math.ceil(f.hp), p[0], p[1] - 16 * s, 13, '#ff7a6a', 'center');
+    if (mate && f.knocked) { txt(f.reviveT > 0.05 ? 'REVIVING...' : 'KNOCKED  ' + Math.ceil(f.hp), p[0], p[1] - 16 * s, 13, f.reviveT > 0.05 ? '#7be38b' : '#ff7a6a', 'center');
+      if (f.reviveT > 0.05) { rrect(p[0] - 30 * s, p[1] - 7 * s, 60 * s, 5 * s, 2, 'rgba(0,0,0,.6)'); rrect(p[0] - 30 * s, p[1] - 7 * s, 60 * s * clamp(f.reviveT / REVIVE_T, 0, 1), 5 * s, 2, '#7be38b'); } }
   }
   for (const fl of G.floats) { const p = project(fl.x, fl.y, fl.z, HW, HH); if (p) txt(fl.text, p[0], p[1], 22, `rgb(${fl.col.map(v => v * 255 | 0)})`, 'center'); }
   // compass
@@ -3201,7 +3403,11 @@ function drawHud(dt, t) {
   // hotbar
   drawHotbar();
   // interact / use / reload
-  if (me.using) { const it = me.cur(); if (it && HEALS[it.k]) bar(HEALS[it.k].name.toUpperCase(), me.useT / HEALS[it.k].use); }
+  if (me.knocked && me.reviveT > 0.05) bigBar('BEING REVIVED' + (me.revivedBy ? ' BY ' + me.revivedBy.toUpperCase() : ''), me.reviveT / REVIVE_T, '#7be38b');
+  else if (interactTarget && interactTarget.kind === 'revive' && kd('use')) bigBar('REVIVING ' + interactTarget.obj.name.toUpperCase(), interactTarget.obj.reviveT / REVIVE_T, '#7be38b');
+  else if (interactTarget && interactTarget.kind === 'reboot' && kd('use') && interactTarget.obj.cd <= 0) bigBar('REBOOTING TEAMMATES', interactTarget.obj.prog / REBOOT_T, '#5bb6ff');
+  else if (me.using) { const it = me.cur(); if (it && HEALS[it.k]) bar(HEALS[it.k].name.toUpperCase(), me.useT / HEALS[it.k].use); }
+  if (hasCards(me) && me.phase === 'ground') { const n = me.cards ? me.cards.length : me.cardsN; txt('\u{1F4B3} ' + n + ' REBOOT CARD' + (n > 1 ? 'S' : '') + ' - FIND A REBOOT VAN (BLUE VAN ICONS ON YOUR MAP)', HW / 2, HH - 118 * s, 14, '#5bb6ff', 'center'); }
   else if (me.reloadT > 0) bar('RELOADING', 1 - me.reloadT / me.reloadTot);
   if (interactTarget && !me.vehicle) {
     const it = interactTarget, cx = HW / 2, y = HH * .64;
@@ -3210,9 +3416,10 @@ function drawHud(dt, t) {
     else if (it.kind === 'box') { name = 'Ammo Box'; act = 'HOLD ' + K('use') + ' TO SEARCH'; prog = interactT / 0.5; }
     else if (it.kind === 'heli') { name = 'Helicopter'; act = K('use') + ' TO FLY'; }
     else if (it.kind === 'revive') { name = it.obj.name; act = 'HOLD ' + K('use') + ' TO REVIVE'; prog = it.obj.reviveT / REVIVE_T; }
+    else if (it.kind === 'reboot' || it.kind === 'van') { name = 'Reboot Van'; act = it.obj.cd > 0 ? 'RECHARGING - READY IN ' + Math.ceil(it.obj.cd) + 's' : it.kind === 'reboot' ? 'HOLD ' + K('use') + ' TO REBOOT YOUR TEAMMATES' : 'BRING A TEAMMATE\'S REBOOT CARD HERE'; prog = it.obj.prog / REBOOT_T; }
     else if (it.kind === 'pickup') { name = itemName(it.obj.item); act = me.slots.every(q => q) && !canTake(me, it.obj.item) ? K('use') + ' TO SWAP' : K('use') + ' TO PICK UP'; }
     rrect(cx - 150 * s, y, 300 * s, 54 * s, 8, 'rgba(10,12,28,.75)');
-    const rc = it.kind === 'pickup' ? RARITY[itemRar(it.obj.item)].col : '#ffd83a';
+    const rc = it.kind === 'pickup' ? RARITY[itemRar(it.obj.item)].col : it.kind === 'reboot' || it.kind === 'van' ? '#5bb6ff' : '#ffd83a';
     rrect(cx - 150 * s, y, 6 * s, 54 * s, 3, rc);
     txt(name, cx - 134 * s, y + 18 * s, 18, rc); txt(act, cx - 134 * s, y + 38 * s, 14, '#fff');
     if (prog > 0) { rrect(cx - 134 * s, y + 48 * s, 270 * s, 3 * s, 1, '#333'); rrect(cx - 134 * s, y + 48 * s, 270 * s * Math.min(1, prog), 3 * s, 1, '#ffd83a'); }
@@ -3234,6 +3441,13 @@ function drawHud(dt, t) {
     txt('LAST AGENTS STANDING', HW / 2, HH * .3 + 108 * s, 20, '#ffd83a', 'center');
   }
   if (G.showMap) drawBigMap();
+}
+function bigBar(label, k, col) {
+  const s = HS, cx = HW / 2, y = HH * .56, w = 320 * s, h = 14 * s;
+  rrect(cx - w / 2 - 10 * s, y - 34 * s, w + 20 * s, h + 46 * s, 8, 'rgba(10,12,28,.72)');
+  txt(label, cx, y - 16 * s, 17, '#fff', 'center');
+  rrect(cx - w / 2, y, w, h, 5, 'rgba(255,255,255,.15)'); rrect(cx - w / 2, y, w * clamp(k, 0, 1), h, 5, col || '#ffd83a');
+  txt(Math.floor(clamp(k, 0, 1) * 100) + '%', cx, y + h / 2, 12, '#fff', 'center');
 }
 function bar(label, k) {
   const s = HS, cx = HW / 2, y = HH * .58;
@@ -3352,6 +3566,7 @@ function drawMap(x, y, w, h, view, range) {
   stormOverlay(P, k);
   for (const f of G.fighters) if (f.alive && f.team === G.me.team && f !== view) { const [a, b] = P(f.x, f.z); c.fillStyle = TEAM_COLS[f.slotIdx % 4]; c.beginPath(); c.arc(a, b, 4, 0, TAU); c.fill(); }
   if (view.phase === 'bus') { const [a, b] = P(G.bus.sx, G.bus.sz), [a2, b2] = P(G.bus.sx + G.bus.dx * G.bus.len, G.bus.sz + G.bus.dz * G.bus.len); c.strokeStyle = '#ffd83a'; c.lineWidth = 2; c.beginPath(); c.moveTo(a, b); c.lineTo(a2, b2); c.stroke(); }
+  if (G.vans && G.teamSize > 1) for (const v of G.vans) { const [a, b] = P(v.x, v.z); if (a > x && a < x + w && b > y && b < y + h) drawVanIcon(a, b, 5, v.cd <= 0); }
   for (const mk of activeMarkers()) { let [a, b] = P(mk.x, mk.z); a = clamp(a, x + 8, x + w - 8); b = clamp(b, y + 8, y + h - 8); drawPin(a, b, 0.8, mk.css); }
   // me arrow
   const [ax, ay] = [x + w / 2, y + h / 2];
@@ -3378,6 +3593,7 @@ function drawBigMap() {
   for (const p of POIS) { const [a, b] = P(p.x, p.z); txt(p.name, a, b - p.r * k - 6, 13, '#fff', 'center'); }
   const B = G.bus; if (G.fighters.some(f => f.phase === 'bus')) { const [a, b] = P(B.sx, B.sz), [a2, b2] = P(B.sx + B.dx * B.len, B.sz + B.dz * B.len); c.strokeStyle = '#ffd83a'; c.lineWidth = 3; c.setLineDash([8, 6]); c.beginPath(); c.moveTo(a, b); c.lineTo(a2, b2); c.stroke(); c.setLineDash([]); }
   for (const f of G.fighters) if (f.alive && f.team === G.me.team) { const [a, b] = P(f.x, f.z); c.fillStyle = f === G.me ? '#ffd83a' : TEAM_COLS[f.slotIdx % 4]; c.beginPath(); c.arc(a, b, 6, 0, TAU); c.fill(); c.strokeStyle = '#000'; c.stroke(); }
+  if (G.vans && G.teamSize > 1) for (const v of G.vans) { const [a, b] = P(v.x, v.z); drawVanIcon(a, b, 7, v.cd <= 0); }
   for (const mk of activeMarkers()) { const [a, b] = P(mk.x, mk.z); drawPin(a, b, 1.3, mk.css); if (mk.owner !== G.me) txt(mk.owner.name, a, b + 14, 12, mk.css, 'center'); }
   c.restore();
   G._mapRect = { x, y, sz };
@@ -3389,6 +3605,16 @@ function drawSpectate() {
   rrect(HW / 2 - 260 * s, HH - 210 * s, 520 * s, 80 * s, 10, 'rgba(10,12,28,.8)');
   txt(G.over && G.winnerTeam === me.team ? 'YOUR TEAM WON!' : 'ELIMINATED BY ' + (me.killer || 'THE STORM').toUpperCase(), HW / 2, HH - 186 * s, 22, G.over && G.winnerTeam === me.team ? '#ffd83a' : '#ff7a6a', 'center');
   txt('PLACED #' + (me.place || '-') + '   ELIMS ' + me.elims + '   DAMAGE ' + Math.round(me.dmgDone), HW / 2, HH - 156 * s, 16, '#fff', 'center');
+  // reboot card
+  const cs = G.net === 'client' ? me.cardSt : cardStatus(me);
+  if (cs && !G.over) {
+    const y = HH - 270 * s;
+    rrect(HW / 2 - 260 * s, y - 22 * s, 520 * s, cs[0] === 3 ? 62 * s : 40 * s, 10, 'rgba(20,40,90,.85)');
+    const line = cs[0] === 1 ? 'YOUR REBOOT CARD IS ON THE GROUND - A TEAMMATE HAS ' + cs[1] + 's TO GRAB IT'
+      : cs[0] === 2 ? String(cs[1]).toUpperCase() + ' HAS YOUR REBOOT CARD - HEADING TO A REBOOT VAN' : String(cs[1]).toUpperCase() + ' IS REBOOTING YOU!';
+    txt(line, HW / 2, y - 2 * s, 15, '#cfe3ff', 'center');
+    if (cs[0] === 3) { rrect(HW / 2 - 200 * s, y + 18 * s, 400 * s, 10 * s, 4, 'rgba(255,255,255,.15)'); rrect(HW / 2 - 200 * s, y + 18 * s, 400 * s * clamp(+cs[2] || 0, 0, 1), 10 * s, 4, '#5bb6ff'); }
+  }
 }
 
 // ---------------------------------------------------------------- map marker
@@ -3451,6 +3677,20 @@ function synth(sec, fn, sr) {
 }
 const noise = () => Math.random() * 2 - 1;
 function lpf(st, x, k) { st.lp += (x - st.lp) * k; return st.lp; }
+// a footstep: heel strike then toe roll. Soft ground = dull thud + grass/dirt rustle, hard floor = knock + scuff
+function stepSound(hard) {
+  const toeAt = .035 + Math.random() * .02, heelF = (hard ? 120 : 70) * (0.85 + Math.random() * .3), bright = hard ? .5 : .22;
+  return synth(.2, (t, k, s) => {
+    const n = noise();
+    s.b = (s.b || 0) + (n - (s.b || 0)) * bright;          // brighter noise
+    s.c = (s.c || 0) + (s.b - (s.c || 0)) * (hard ? .2 : .06);  // band-limited (rustle / scuff)
+    const band = s.b - s.c;
+    const heel = Math.exp(-t * (hard ? 75 : 55)), t2 = t - toeAt, toe = t2 > 0 ? Math.exp(-t2 * (hard ? 95 : 60)) * .6 : 0;
+    const thud = Math.sin(t * heelF * TAU) * Math.exp(-t * (hard ? 50 : 40)) * (hard ? .5 : .9);
+    const grit = lpf(s, n, hard ? .35 : .12) * (heel * .5 + toe) * (hard ? .5 : .9);
+    return thud + band * (heel * .6 + toe) * (hard ? 1.1 : 1.6) + grit;
+  });
+}
 function initAudio() {
   if (AU.ctx) { if (AU.ctx.state === 'suspended') AU.ctx.resume(); return; }
   try { AU.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
@@ -3483,7 +3723,8 @@ function initAudio() {
     build_wood: synth(.2, (t, k, s) => (lpf(s, noise(), .25) + Math.sin(t * 240 * TAU) * .4) * Math.exp(-t * 22) * .7),
     build_brick: synth(.2, (t, k, s) => (lpf(s, noise(), .4) + Math.sin(t * 160 * TAU) * .5) * Math.exp(-t * 22) * .7),
     build_metal: synth(.3, t => (Math.sin(t * 900 * TAU) * .4 + Math.sin(t * 1350 * TAU) * .3) * Math.exp(-t * 16)),
-    step: synth(.07, (t, k, s) => lpf(s, noise(), .2) * Math.exp(-t * 60) * .8),
+    step_g0: stepSound(false), step_g1: stepSound(false), step_g2: stepSound(false), step_g3: stepSound(false),
+    step_h0: stepSound(true), step_h1: stepSound(true), step_h2: stepSound(true), step_h3: stepSound(true),
     swim: synth(.25, (t, k, s) => lpf(s, noise(), .12) * Math.sin(k * Math.PI) * .6),
     jump: synth(.12, (t, k, s) => lpf(s, noise(), .15) * Math.exp(-t * 30) * .6),
     glider: synth(.5, (t, k, s) => lpf(s, noise(), .1) * Math.sin(k * Math.PI) * .8),
@@ -4378,12 +4619,14 @@ function netViewers() {
   return out;
 }
 function peerPresence(peer) { if (!Net.room) return null; const p = Net.room.peers().find(q => q.peer === peer); return p ? p.presence : null; }
+function netRebooting(f, v) { const pr = peerPresence(f.net); return !!(pr && pr.st && pr.st.e && pr.st.rbv === v.id); }
 function netReviving(f, v) { const pr = peerPresence(f.net); return !!(pr && pr.st && pr.st.e && pr.st.rv === v.id); }
 
 // host: apply a friend's shared state to their agent
 function netApplyRemote(f, dt) {
   const pr = peerPresence(f.net); const st = pr && pr.st;
   if (!st || st.no !== Net.matchNo) { if (f.phase === 'ground') updateVertical(f, dt); return; }
+  if ((st.rbn | 0) !== (f.rebootNo | 0)) return;   // just rebooted: wait for their game to catch up
   f.marker = Array.isArray(st.mk) && isFinite(st.mk[0]) && isFinite(st.mk[1]) ? { x: clamp(+st.mk[0], -HE, HE), z: clamp(+st.mk[1], -HE, HE) } : null;
   if (f.phase === 'bus' && st.ph === 1) jumpFromBus(f);
   if (f.phase !== 'bus') {
@@ -4436,6 +4679,7 @@ function itemCode(it) {
   if (k === 'ammo') return [3, AMMO_ORDER.indexOf(it.a), it.n];
   if (k === 'mat') return [4, MAT_ORDER.indexOf(it.m), it.n];
   if (k === 'move') return [5, MOVE_KEYS.indexOf(it.k), it.n];
+  if (k === 'card') return [6, it.of | 0, Math.round(it.t)];
   return 0;
 }
 function itemDecode(c) {
@@ -4445,6 +4689,7 @@ function itemDecode(c) {
   if (c[0] === 3 && AMMO_ORDER[c[1]]) return { k: 'AMMO', a: AMMO_ORDER[c[1]], n: c[2] | 0 };
   if (c[0] === 4 && MAT_ORDER[c[1]]) return { k: 'MAT', m: MAT_ORDER[c[1]], n: c[2] | 0 };
   if (c[0] === 5 && MOVE_KEYS[c[1]]) return { k: MOVE_KEYS[c[1]], n: c[2] | 0 };
+  if (c[0] === 6) return { k: 'CARD', of: c[1] | 0, t: +c[2] || 0 };
   return null;
 }
 function fighterRow(f) {
@@ -4463,7 +4708,8 @@ function netHostTick(dt) {
     const S = G.storm;
     const msg = { n: Net.matchNo, t: r1(G.time), b: [r1(G.bus.s), r1(G.bus.t)], st: [S.phase, S.state === 'wait' ? 0 : S.state === 'shrink' ? 1 : 2, r1(S.timer), r1(S.cx), r1(S.cz), r1(S.r), r1(S.ncx), r1(S.ncz), r1(S.nr), S.dmg],
       f: [], d: [], h: G.helis.map(h => [h.id, r1(h.x), r1(h.y), r1(h.z), Math.round(h.yaw * 100) / 100, Math.round(h.spin), h.driver ? h.driver.id : -1]),
-      o: G.over ? [G.winnerTeam, G.winner ? G.winner.id : -1] : 0, l: playersLeft() };
+      o: G.over ? [G.winnerTeam, G.winner ? G.winner.id : -1] : 0, l: playersLeft(),
+      rv: G.fighters.filter(f => f.alive && f.knocked && f.reviveT > 0).map(f => [f.id, r1(f.reviveT)]) };
     for (const f of G.fighters) { if (f.alive) msg.f.push(fighterRow(f)); else msg.d.push([f.id, f.place, f.elims]); }
     // effects near friends
     const near = (x, z) => friends.some(f => Math.abs(f.x - x) < 260 && Math.abs(f.z - z) < 260);
@@ -4488,7 +4734,7 @@ function netHostTick(dt) {
       for (const p of G.pickups) if (Math.abs(p.x - f.x) < 50 && Math.abs(p.z - f.z) < 50 && pk.length < 60) pk.push([p.id, r1(p.x), r1(p.y), r1(p.z), itemCode(p.item), p.delay > 0 ? 1 : 0]);
       const m = { n: Net.matchNo, to: f.net, id: f.id, hp: Math.ceil(f.hp), sh: Math.ceil(f.sh), sl: f.slots.map(itemCode), am: AMMO_ORDER.map(a => f.ammo[a]), mt: MAT_ORDER.map(k => f.mats[k]),
         rl: f.reloadT > 0 ? [r1(f.reloadT), r1(f.reloadTot)] : 0, us: f.using ? r1(f.useT) : -1, kn: f.knocked ? 1 : 0, rv: r1(f.reviveT), al: f.alive ? 1 : 0, pl: f.place, el: f.elims, dm: Math.round(f.dmgDone),
-        ki: f.killer || '', q, pk, pr: [r1(f.x), r1(f.z)] };
+        ki: f.killer || '', q, pk, pr: [r1(f.x), r1(f.z)], cd: f.cards ? f.cards.length : 0, rb: f.knocked ? f.revivedBy || '' : '', cs: cardStatus(f) };
       let s = JSON.stringify(m);
       while (s.length > 3950 && m.pk.length) { m.pk.length = Math.floor(m.pk.length / 2); s = JSON.stringify(m); }
       (Net.room.emitTo ? Net.room.emitTo(f.net, 'm', m) : Net.room.emit('m', m)).catch(() => { });
@@ -4503,7 +4749,7 @@ function netHostTick(dt) {
     const per = 110, chunks = Math.max(1, Math.ceil(all.length / per));
     Net.buildCycle = (Net.buildCycle + 1) % chunks;
     const part = all.slice(Net.buildCycle * per, Net.buildCycle * per + per).map(b => [b.ix, b.iz, b.lv, PIECES.indexOf(b.piece), b.dir === 'x' ? 4 : b.dir === 'z' ? 5 : b.dir, MAT_ORDER.indexOf(b.mat), Math.round(b.hp / b.maxhp * 100), Math.round(b.prog * 100), b.edit | 0]);
-    const m = { n: Net.matchNo, mk: G.fighters.filter(f => f.kind === 'human' && f.marker).map(f => [f.id, r1(f.marker.x), r1(f.marker.z)]), pd: G.pads.map(p => [r1(p.x), r1(p.y), r1(p.z)]), c: bits(ch), x: bits(bx), p: G.propDead.slice(-700).map(v => v.toString(36)).join(','), bc: [Net.buildCycle, chunks, G.buildVer], b: part };
+    const m = { n: Net.matchNo, vs: (G.vans || []).map(v => [Math.ceil(v.cd), r1(v.prog)]), mk: G.fighters.filter(f => f.kind === 'human' && f.marker).map(f => [f.id, r1(f.marker.x), r1(f.marker.z)]), pd: G.pads.map(p => [r1(p.x), r1(p.y), r1(p.z)]), c: bits(ch), x: bits(bx), p: G.propDead.slice(-700).map(v => v.toString(36)).join(','), bc: [Net.buildCycle, chunks, G.buildVer], b: part };
     let s = JSON.stringify(m);
     while (s.length > 3950 && m.b.length) { m.b.length = Math.floor(m.b.length * 0.7); s = JSON.stringify(m); }
     Net.room.emit('w', m).catch(() => { });
@@ -4516,6 +4762,7 @@ Net.onSnap = function (msg) {
   const d = msg.data; Net.lastSnap = performance.now();
   if (!Array.isArray(d.f)) return;
   G.hostTime = d.t; G.bus.s = d.b[0]; G.bus.t = d.b[1];
+  { const rv = new Map(Array.isArray(d.rv) ? d.rv : []); for (const f of G.fighters) if (f !== G.me) f.reviveT = +(rv.get(f.id) || 0); }
   const S = G.storm, st = d.st;
   [S.phase, , S.timer, S.cx, S.cz, S.r, S.ncx, S.ncz, S.nr, S.dmg] = st; S.state = st[1] === 0 ? 'wait' : st[1] === 1 ? 'shrink' : 'done';
   const byId = G.byId || (G.byId = new Map(G.fighters.map(f => [f.id, f])));
@@ -4574,6 +4821,7 @@ Net.onMine = function (msg) {
   me.using = m.us >= 0; me.useT = Math.max(0, m.us);
   const wasKnocked = me.knocked; me.knocked = !!m.kn; me.reviveT = m.rv; me.elims = m.el; me.place = m.pl; me.dmgDone = m.dm;
   if (m.ki) me.killer = m.ki;
+  me.cardsN = m.cd | 0; me.revivedBy = String(m.rb || '').slice(0, 16); me.cardSt = Array.isArray(m.cs) ? m.cs : 0;
   if (me.alive && !m.al) {
     me.alive = false; me.phase = 'dead'; G.deathT = 0;
     const mates = teammates(me); G.spectate = mates[0] || null;
@@ -4586,6 +4834,7 @@ Net.onMine = function (msg) {
     else if (k === 'ta') toast(String(v[0]).slice(0, 60), 2.2, v[1]);
     else if (k === 'sn') sfx(String(v[0]), +v[1]);
     else if (k === 'hm') G.hitmarker = 0.14;
+    else if (k === 'rb' && Array.isArray(v)) clientRebooted(v);
     else if (k === 'sk') G.shake = Math.max(G.shake, +v || 0);
     else if (k === 'kb' && Array.isArray(v) && me.alive && me.phase === 'ground') { launch(me, +v[0] || 0, +v[1] || 0, +v[2] || 0); G.shake = Math.max(G.shake, 5); }
   }
@@ -4605,6 +4854,7 @@ Net.onWorld = function (msg) {
   const m = msg.data;
   if (!G || G.net !== 'client' || !m || m.n !== Net.matchNo) return;
   const unbits = (s, n) => { const out = []; for (let i = 0; i < s.length; i++) { const v = s.charCodeAt(i) - 48; for (let j = 0; j < 6; j++) out.push((v >> j) & 1); } return out.slice(0, n); };
+  if (Array.isArray(m.vs) && G.vans) m.vs.forEach((a, i) => { const v = G.vans[i]; if (v && Array.isArray(a)) { v.cd = +a[0] || 0; v.prog = +a[1] || 0; } });
   if (Array.isArray(m.mk)) {
     const got = new Map(m.mk.filter(a => Array.isArray(a)).map(a => [a[0], { x: +a[1], z: +a[2] }]));
     for (const f of G.fighters) if (f !== G.me) f.marker = got.get(f.id) || null;
@@ -4677,6 +4927,7 @@ function clientUpdate(dt) {
       ph: me.phase === 'bus' ? 0 : me.phase === 'sky' ? 1 : 2, gl: me.glide ? 1 : 0, sw: me.swim ? 1 : 0, gr: me.grounded ? 1 : 0, sel: me.sel, bm: me.buildMode ? 1 : 0, ads: me.ads ? 1 : 0,
       mv: Math.round(me.moveAmt * 10) / 10, fire: Input.mb[0] && Input.locked && !me.buildMode ? 1 : 0, aim: [r1(Cam.aim[0]), r1(Cam.aim[1]), r1(Cam.aim[2])],
       e: kd('use') ? 1 : 0, rv: interactTarget && interactTarget.kind === 'revive' ? interactTarget.obj.id : -1,
+      rbv: interactTarget && interactTarget.kind === 'reboot' ? interactTarget.obj.id : -1, rbn: me.rebootNo | 0,
       veh: h ? [h.id, r1(h.x), r1(h.y), r1(h.z), Math.round(h.yaw * 100) / 100, r1(h.vx), r1(h.vz), Math.round(h.spin)] : null, acts: Net.acts,
       mk: G.marker ? [r1(G.marker.x), r1(G.marker.z)] : 0 };
     Net.room.presence(Object.assign(Net.myPresence(), { st })).catch(() => { });
