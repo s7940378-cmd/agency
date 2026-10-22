@@ -3053,6 +3053,50 @@ function pushCharacter(L, f, t, isMe) {
 
 // ---------------------------------------------------------------- frame
 let VP = null;
+// ---- lobby: you and everyone in your party stand on a stage outside The Agency
+const LOBBY = { x: 0, z: 38 };
+const _lobbyFolk = new Map();
+function lobbySpots(n) {
+  // front row of up to 5 around the middle (you in the middle), more rows behind for big parties
+  const out = [], order = [0, -1, 1, -2, 2];
+  for (let i = 0; i < n; i++) {
+    if (i < 5) { out.push([order[i] * 1.35, 0, 0]); continue; }
+    const k = i - 5, row = 1 + Math.floor(k / 7), col = k % 7;
+    out.push([(col - 3) * 1.15 + (row % 2 ? .55 : 0), row * 1.9, row * 0.45]);
+  }
+  return out;
+}
+function lobbyParty() {
+  const list = Net.members();
+  const me = list.find(m => m.me) || list[0];
+  return [me, ...list.filter(m => m !== me)];
+}
+function lobbyFolk(t) {
+  const list = lobbyParty(), spots = lobbySpots(list.length), gy = groundH(LOBBY.x, LOBBY.z), out = [];
+  list.forEach((m, i) => {
+    const key = m.peer || 'me';
+    let f = _lobbyFolk.get(key);
+    if (!f) { f = { walk: 0, anim: 0, hurt: 0, knocked: false, swim: false, vehicle: null, sel: -1, pitch: 0, swing: 0, buildMode: false, phase: 'ground', slots: [], gun() { return null; }, cur() { return null; }, joined: t }; _lobbyFolk.set(key, f); }
+    const sp = spots[i];
+    f.x = LOBBY.x + sp[0]; f.z = LOBBY.z + sp[1]; f.y = gy + sp[2]; f.row = sp[1] > 0 ? 1 : 0; f.outfit = m.outfit; f.name = m.name; f.lvl = m.lvl || 1; f.host = m.host; f.me = !!m.me;
+    f.yaw = Math.PI + Math.sin(t * 0.6 + i * 1.7) * 0.12 + sp[0] * 0.05;
+    f.emote = t - f.joined < 2.5 ? 1 : 0;            // new arrivals wave
+    out.push(f);
+  });
+  for (const k of [..._lobbyFolk.keys()]) if (!list.some(m => (m.peer || 'me') === k)) _lobbyFolk.delete(k);
+  return out;
+}
+function drawLobbyStage(t) {
+  const L = S3.parts; L.clear();
+  const gy = groundH(LOBBY.x, LOBBY.z), folk = lobbyFolk(t);
+  // stage: a round-ish gold-trimmed platform
+  const rows = Math.max(0, Math.ceil((folk.length - 5) / 7));
+  const W_ = 8.5, D_ = 3 + rows * 1.9;
+  L.push(LOBBY.x, gy + .1, LOBBY.z + D_ / 2 - 1.2, 0, W_, .2, D_, .16, .17, .24, 1);
+  L.push(LOBBY.x, gy + .21, LOBBY.z - 1.2, 0, W_, .04, .12, 1, .82, .2, 1);
+  for (const f of folk) { pushCharacter(L, f, t, f.me); L.push(f.x, f.y + .22, f.z, 0, .9, .02, .9, 0, 0, 0, 1); }
+  L.draw();
+}
 function renderScene(t, quality) {
   const canvas = gl.canvas;
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -3100,7 +3144,7 @@ function renderScene(t, quality) {
   S3.plist.pine.draw(); S3.plist.tree.draw(); S3.plist.bush.draw();
   gl.uniform1f(R.u.uSway, 0);
   for (const k of ['rock', 'car', 'crate', 'hay', 'container', 'pallet']) S3.plist[k].draw();
-  if (!G) return;
+  if (!G) { if (App.state === 'lobby') drawLobbyStage(t); return; }
   // builds
   let growing = false; for (const b of G.builds.values()) if (b.prog < 1 || b.anim < 1) { growing = true; break; }
   if (S3._bv !== G.buildVer || growing) {
@@ -3291,7 +3335,7 @@ function rrect(x, y, w, h, r, fill) { hctx.beginPath(); hctx.roundRect ? hctx.ro
 
 function drawHud(dt, t) {
   const c = hctx; c.clearRect(0, 0, HW, HH);
-  if (!G) return;
+  if (!G) { if (App.state === 'lobby') drawLobbyNames(); return; }
   const me = G.me, s = HS;
   const view = me.alive ? me : (G.spectate || me);
   // storm / low health tint
@@ -3527,6 +3571,18 @@ function drawGunIcon(k, x, y, w) {
     c.restore();
   }
   c.restore();
+}
+function drawLobbyNames() {
+  const s = HS;
+  for (const f of _lobbyFolk.values()) {
+    if (f.x === undefined) continue;
+    const p = project(f.x, f.y + 2.25, f.z, HW, HH); if (!p) continue;
+    if (f.row) { txt(f.name, p[0], p[1], 11, f.host ? '#ffd83a' : '#e6e9ff', 'center'); continue; }
+    const col = f.me ? '#ffd83a' : '#ffffff', w = Math.max(70, f.name.length * 9 + 28) * s;
+    rrect(p[0] - w / 2, p[1] - 20 * s, w, 34 * s, 6, 'rgba(10,12,28,.72)');
+    txt((f.host && !f.me ? '\u2605 ' : '') + f.name, p[0], p[1] - 9 * s, 14, col, 'center');
+    txt('LVL ' + f.lvl + (f.me ? '  (YOU)' : f.host ? '  LEADER' : ''), p[0], p[1] + 6 * s, 10, '#aab4ff', 'center');
+  }
 }
 function drawHealIcon(k, x, y, r) {
   const c = hctx, H = HEALS[k]; c.save(); c.translate(x, y);
@@ -5357,12 +5413,12 @@ function frame(ts) {
         if (wasAlive !== G.me.alive || wasOver !== G.over) { wasAlive = G.me.alive; wasOver = G.over; matchUI(); }
       }
     } else {
-      // lobby fly-around
-      const a = t * 0.04;
-      Cam.eye = [Math.sin(a) * 300, 95, Math.cos(a) * 300];
-      const tx = Math.sin(a + 0.6) * 60, tz = Math.cos(a + 0.6) * 60;
-      const dx = tx - Cam.eye[0], dy = 10 - Cam.eye[1], dz = tz - Cam.eye[2], l = Math.hypot(dx, dy, dz);
-      Cam.fwd = [dx / l, dy / l, dz / l]; Cam.fov = 60;
+      // lobby: camera in front of the party stage, gently drifting
+      const gy = groundH(LOBBY.x, LOBBY.z), n = Math.max(1, Net.members().length), back = n > 5 ? 2.5 + Math.ceil((n - 5) / 7) * 1.6 : 0;
+      Cam.eye = [LOBBY.x + Math.sin(t * 0.15) * 0.8, gy + 1.9 + back * .45, LOBBY.z - 6.2 - back];
+      const tx = LOBBY.x, ty = gy + 1.15 + back * .2, tz = LOBBY.z + back * .4;
+      const dx = tx - Cam.eye[0], dy = ty - Cam.eye[1], dz = tz - Cam.eye[2], l = Math.hypot(dx, dy, dz);
+      Cam.fwd = [dx / l, dy / l, dz / l]; Cam.fov = 50;
     }
     Input.dx = Input.dy = 0; Input.pressed.clear(); Input.wheel = 0;
     resizeGL();
