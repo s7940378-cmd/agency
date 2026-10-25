@@ -4918,9 +4918,10 @@ function settingsCard() {
     <label>Graphics <select id="q">${Object.entries(QUALITY).map(([k, v]) => `<option value="${k}" ${s.quality === k ? 'selected' : ''}>${v.label}</option>`).join('')}</select></label>
     <label>Mouse speed <input type="range" id="sens" min="0.3" max="2.5" step="0.1" value="${s.sens}"></label>
     <label>Volume <input type="range" id="vol" min="0" max="1" step="0.05" value="${s.vol}"></label>
-    <button id="kb">KEY BINDS</button>
+    <button id="kb">KEY BINDS</button><button id="rdm">REDEEM CODE</button>
   </div>`);
   c.querySelector('#kb').onclick = () => keybindsMenu();
+  c.querySelector('#rdm').onclick = () => redeemMenu();
   c.querySelector('#q').onchange = e => { s.quality = e.target.value; App.quality = QUALITY[s.quality]; App.scale = App.quality.scale; writeSave(); };
   c.querySelector('#sens').oninput = e => { s.sens = +e.target.value; Cam.sens = s.sens; writeSave(); };
   c.querySelector('#vol').oninput = e => { s.vol = +e.target.value; AU.vol = s.vol; if (AU.master) AU.master.gain.value = s.vol; writeSave(); };
@@ -5635,6 +5636,37 @@ function checkReturnFromCheckout() {
   if (a.current === p.user) { loadSave(); }
   const it = cosFind(p.id);
   setTimeout(() => { uiToast('THANK YOU! ' + (it ? it.item.name.toUpperCase() : 'YOUR ITEM') + ' IS IN YOUR LOCKER'); sfx('chest', .6); if (App.state === 'lobby') renderLobby(); }, 600);
+}
+
+// ---- redeem codes (only a hash is stored, so the code itself is not in the page)
+const REDEEM = { '5bf0e82c8418198b0e12d629282eccc7eab6238a303612c7945657266767092d': 'ALL' };
+async function redeemCode(code) {
+  code = String(code || '').trim().toUpperCase();
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('agency:' + code));
+  const h = [...new Uint8Array(buf)].map(x => x.toString(16).padStart(2, '0')).join('');
+  const what = REDEEM[h];
+  if (!what) return 'That code did not work.';
+  if (!App.user) return 'Sign in to your account first, so the items are saved to it.';
+  if (what === 'ALL') {
+    for (const cat of COS_ORDER) for (const it of COS[cat].list) if (it.price || it.usd || it.tier || it.reward) grantItem(cat, it.id, false);
+    App.save.unlockAll = true;
+  }
+  writeSave(); Net.lobbyChanged();
+  return null;
+}
+function redeemMenu() {
+  App.modal = true;
+  const el = $(`<div class="center"><div class="menu"><h2>REDEEM A CODE</h2>
+    <input type="text" id="rc" maxlength="40" placeholder="ENTER CODE" style="text-transform:uppercase;text-align:center">
+    <div class="note" id="rcmsg" style="text-align:center">${App.user ? 'Items go to ' + esc(App.user) + "'s locker." : 'Sign in first so the items are saved to your account.'}</div>
+    <button class="primary" id="go">REDEEM</button><button id="no">CLOSE</button></div></div>`);
+  el.querySelector('#no').onclick = () => { App.modal = false; renderLobby(); };
+  el.querySelector('#go').onclick = async () => {
+    const err = await redeemCode(el.querySelector('#rc').value);
+    if (err) { el.querySelector('#rcmsg').textContent = err; sfx('click', .3); return; }
+    App.modal = false; sfx('chest', .6); uiToast('EVERYTHING UNLOCKED - CHECK YOUR LOCKER'); renderLobby();
+  };
+  setUI(el);
 }
 // =====================================================================
 //  Career stats: recorded at the end of every match, shown on the
