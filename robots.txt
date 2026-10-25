@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://s7940378-cmd.github.io/agency/sitemap.xml

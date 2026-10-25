@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stats &amp; How to Play - Operation: Agency</title>
+<meta name="description" content="Your Operation: Agency career stats - wins, eliminations, K/D, damage and recent matches - plus how to play the free browser battle royale.">
+<link rel="canonical" href="https://s7940378-cmd.github.io/agency/stats.html">
+<meta name="theme-color" content="#0b0d1c">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230b0d1c'/%3E%3Cpath d='M32 8 52 52H40l-8-18-8 18H12z' fill='%23ffd23a'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Barlow+Condensed:ital,wght@0,500;0,700;0,800;1,800&display=swap">
+<style>
+:root{--ink:#0b0d1c;--panel:#12152b;--panel2:#1b2048;--line:#2c3363;--text:#eef0ff;--muted:#9aa3d6;--gold:#ffd23a;--blue:#58b7ff}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at 50% -10%,#3b2f8a 0,transparent 60%),var(--ink);color:var(--text);font-family:'Barlow Condensed',system-ui,sans-serif;font-size:18px;line-height:1.45}
+a{color:var(--blue)}
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:16px max(16px,4vw);border-bottom:1px solid var(--line)}
+.logo{font-family:'Black Ops One',sans-serif;font-size:1.9rem;line-height:1;color:var(--gold)}.logo small{display:block;font-size:.8rem;color:var(--text);letter-spacing:.2em}
+.play{margin-left:auto;background:var(--gold);color:#16120a;font-weight:800;font-size:1.1rem;text-decoration:none;padding:10px 22px;border-radius:10px;letter-spacing:.05em}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+h1{font-style:italic;font-weight:800;font-size:2.2rem;margin:.2em 0}
+h2{font-style:italic;font-weight:800;font-size:1.5rem;margin:1.4em 0 .4em;letter-spacing:.02em}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.tile{background:var(--panel2);border-radius:10px;padding:12px}.tile small{display:block;font-weight:800;font-size:.75rem;letter-spacing:.1em;color:var(--muted)}.tile b{font-size:1.8rem;color:var(--gold);font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.85rem;letter-spacing:.08em}
+td.win{color:var(--gold);font-weight:800}
+.chart{display:flex;align-items:flex-end;gap:5px;height:110px;margin:10px 0}.chart i{flex:1;border-radius:4px 4px 0 0;min-width:6px}
+.muted{color:var(--muted)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.who{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.who select{font:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:4px 8px}
+</style>
+</head>
+<body>
+<header><div class="logo"><small>OPERATION:</small>AGENCY</div><a class="play" href="./">PLAY FREE NOW</a></header>
+<main>
+  <h1>Career stats</h1>
+  <div class="who"><span class="muted" id="who"></span><select id="pick" hidden></select></div>
+  <div class="card" style="margin-top:10px"><div class="tiles" id="tiles"></div></div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="card"><h2 style="margin-top:0">By mode</h2><table id="modes"></table></div>
+    <div class="card"><h2 style="margin-top:0">Eliminations per match</h2><div class="chart" id="chart"></div><div class="muted" style="font-size:.9rem">Last 25 matches, oldest on the left. Gold bars are wins.</div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h2 style="margin-top:0">Recent matches</h2><table id="recent"></table></div>
+
+  <h2>How to play Operation: Agency</h2>
+  <div class="grid2">
+    <div class="card"><b>Drop in.</b> Ride the bus over the island and jump out wherever you like. Skydive, then your glider opens near the ground.</div>
+    <div class="card"><b>Loot up.</b> Open chests, grab guns, shields and heals. Rarer weapons glow brighter colours.</div>
+    <div class="card"><b>Build.</b> Harvest wood, brick and metal with your pickaxe, then build walls, ramps, floors and cones to win fights.</div>
+    <div class="card"><b>Ride.</b> Helicopters seat four - passengers can shoot out of them. Cars seat two. Ram an enemy and they go flying.</div>
+    <div class="card"><b>Beat the storm.</b> The storm eye shrinks through the match. Stay inside it and be the last agent (or team) standing.</div>
+    <div class="card"><b>Play with friends.</b> Make a party and play duos, squads, 25 v 25 - or face your friends in 1 v 1 and 2 v 2.</div>
+  </div>
+  <h2>FAQ</h2>
+  <div class="card"><p><b>Is it free?</b> Yes. Make a free account to play as many matches as you like and keep your level, locker and stats.</p>
+  <p><b>Does it work on a Chromebook?</b> Yes - it was built to run smoothly on Chromebooks. Lower the graphics setting if it feels slow.</p>
+  <p><b>What's in the Item Shop?</b> New outfits, pickaxes, emotes, gliders and contrails every day. Most cost coins you earn by playing.</p>
+  <p><b>Where are my stats saved?</b> In your account in this browser. Stats from another computer show up after you move your account there with a transfer code.</p></div>
+</main>
+<script>
+function read(k){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}}
+const db=read('agency_accounts')||{users:{},current:null};
+const saves=[];
+for(const k in db.users){const u=db.users[k];if(u&&u.save)saves.push({name:u.name||k,key:k,save:u.save})}
+const guest=read('agency_save');if(guest)saves.push({name:'Guest (this browser)',key:'__guest',save:guest});
+const pick=document.getElementById('pick');
+let cur=saves.find(s=>s.key===db.current)||saves[0];
+if(saves.length>1){pick.hidden=false;pick.innerHTML=saves.map(s=>`<option value="${s.key}" ${s===cur?'selected':''}>${esc(s.name)}</option>`).join('');pick.onchange=()=>{cur=saves.find(s=>s.key===pick.value);draw()}}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+const LABEL={SOLO:'Solo',DUOS:'Duos',SQUADS:'Squads','25V25':'25 v 25','1V1':'1 v 1','2V2':'2 v 2'};
+function draw(){
+  const who=document.getElementById('who');
+  if(!cur){who.innerHTML='No matches on this browser yet. <a href="./">Play your first match</a>!';return}
+  const s=cur.save,c=Object.assign({dmg:0,time:0,top10:0,deaths:0,chests:0,best:{elims:0,dmg:0},modes:{},history:[]},s.career||{});
+  const m=s.matches|0,w=s.wins|0,e=s.elims|0,lvl=1+Math.floor((s.xp|0)/1000);
+  who.textContent='Showing stats for '+cur.name+'.';
+  const t=[['Wins',w],['Matches',m],['Win rate',m?(100*w/m).toFixed(1)+'%':'-'],['Eliminations',e],['K/D',(e/Math.max(1,c.deaths)).toFixed(2)],['Top 10s',c.top10],['Avg damage',m?Math.round(c.dmg/m):0],['Total damage',c.dmg|0],['Best elims',c.best.elims],['Time played',(c.time>=3600?Math.floor(c.time/3600)+'h ':'')+Math.floor(c.time%3600/60)+'m'],['Level',lvl],['Coins',s.coins|0]];
+  document.getElementById('tiles').innerHTML=t.map(x=>`<div class="tile"><small>${x[0].toUpperCase()}</small><b>${x[1]}</b></div>`).join('');
+  const md=Object.keys(c.modes);
+  document.getElementById('modes').innerHTML=md.length?'<tr><th>MODE</th><th>PLAYED</th><th>WINS</th><th>ELIMS</th></tr>'+md.map(k=>`<tr><td>${LABEL[k]||k}</td><td>${c.modes[k].m}</td><td>${c.modes[k].w}</td><td>${c.modes[k].e}</td></tr>`).join(''):'<tr><td class="muted">No matches yet.</td></tr>';
+  const h=c.history||[],mx=Math.max(1,...h.map(x=>x.elims));
+  document.getElementById('chart').innerHTML=h.slice().reverse().map(x=>`<i title="#${x.place} - ${x.elims} elims" style="height:${10+90*x.elims/mx}px;background:${x.win?'var(--gold)':'var(--blue)'}"></i>`).join('');
+  document.getElementById('recent').innerHTML=h.length?'<tr><th>DATE</th><th>MODE</th><th>PLACE</th><th>ELIMS</th><th>DAMAGE</th></tr>'+h.map(x=>`<tr><td>${new Date(x.at).toLocaleDateString()}</td><td>${LABEL[x.mode]||x.mode}</td><td class="${x.win?'win':''}">${x.win?'VICTORY':'#'+x.place}</td><td>${x.elims}</td><td>${x.dmg}</td></tr>`).join(''):'<tr><td class="muted">Your recent matches show up here.</td></tr>';
+}
+draw();
+</script>
+</body>
+</html>
