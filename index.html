@@ -867,6 +867,9 @@ function buildTerrain() {
     let bad = false;
     for (let i = 0; i < RIVER.length - 1; i++) if (segDist(x, z, RIVER[i][0], RIVER[i][1], RIVER[i + 1][0], RIVER[i + 1][1]) < r + 18) bad = true;
     if (bad) continue;
+    // keep hills off the roads - roads run through the valleys
+    for (const rd of W.roads) for (let i = 0; i < rd.length - 1; i++) if (segDist(x, z, rd[i][0], rd[i][1], rd[i + 1][0], rd[i + 1][1]) < r + 14) bad = true;
+    if (bad) continue;
     W.hills.push({ x, z, r, h });
   }
   for (let iz = 0; iz < HN; iz++) for (let ix = 0; ix < HN; ix++) {
@@ -889,6 +892,29 @@ function buildTerrain() {
     const ld = hyp((x - LAKE.x) / LAKE.rx, (z - LAKE.z) / LAKE.rz);
     if (ld < 1.6) h = lerp(-2.2, h, smooth(clamp((ld - 0.85) / 0.75, 0, 1)));
     HGT[iz * HN + ix] = h;
+  }
+}
+// level the ground under every road: a smooth, gently sloping bed with soft shoulders
+function gradeRoads() {
+  for (const rd of W.roads) {
+    // sample the road every 2 m and smooth the heights along it
+    const pts = [];
+    for (let i = 0; i < rd.length - 1; i++) {
+      const [ax, az] = rd[i], [bx, bz] = rd[i + 1], L = hyp(bx - ax, bz - az), n = Math.max(1, Math.round(L / 2));
+      for (let k = (i ? 1 : 0); k <= n; k++) { const t = k / n, x = lerp(ax, bx, t), z = lerp(az, bz, t); pts.push({ x, z, h: Math.max(groundH(x, z), WATER_Y + 0.6) }); }
+    }
+    const W2 = 10, sm = pts.map((p, i) => { let s = 0, c = 0; for (let j = Math.max(0, i - W2); j <= Math.min(pts.length - 1, i + W2); j++) { s += pts[j].h; c++; } return s / c; });
+    // spread over the grid cells near the road
+    let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9; for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
+    const R = 13, FLAT = 4.8;
+    for (let iz = Math.max(0, Math.floor((z0 - R + HE) / HC)); iz <= Math.min(HN - 1, Math.ceil((z1 + R + HE) / HC)); iz++)
+      for (let ix = Math.max(0, Math.floor((x0 - R + HE) / HC)); ix <= Math.min(HN - 1, Math.ceil((x1 + R + HE) / HC)); ix++) {
+        const x = ix * HC - HE, z = iz * HC - HE;
+        let bd = 1e9, bh = 0; for (let k = 0; k < pts.length; k++) { const d = (pts[k].x - x) ** 2 + (pts[k].z - z) ** 2; if (d < bd) { bd = d; bh = sm[k]; } }
+        bd = Math.sqrt(bd); if (bd > R) continue;
+        const i = iz * HN + ix, k = bd <= FLAT ? 1 : smooth(1 - (bd - FLAT) / (R - FLAT));
+        HGT[i] = lerp(HGT[i], bh, k);
+      }
   }
 }
 function carveRiver() {
@@ -1119,6 +1145,7 @@ function buildWorld() {
   buildRoads(rng);
   buildTerrain();
   carveRiver();
+  gradeRoads();
   buildTowns(rng);
   scatterNature(rng);
   for (const c of W.chests) if (c.y === undefined) c.y = groundH(c.x, c.z);
@@ -1406,14 +1433,14 @@ function newMatch(opt) {
     G.fighters.push(f);
   }
   // drop plans for bots
-  const teamLead = {};
+  const teamLead = {}, poiLoad = {};
   for (const f of G.fighters) {
     if (f.kind !== 'bot') continue;
     if (f.follow) { f.jumpAt = 9999; continue; }
     const grp = ts <= SMALL_PARTY ? f.team : f.team * 100 + Math.floor(f.slotIdx / 4);   // big teams drop in squads of 4
     if (teamLead[grp]) { const L = teamLead[grp]; f.landTarget = [L.landTarget[0] + rng.range(-12, 12), L.landTarget[1] + rng.range(-12, 12)]; f.jumpAt = L.jumpAt + rng.range(0, 1.5); continue; }
     let tx, tz;
-    if (rng.chance(0.65)) { const P = rng.pick(POIS); const a = rng.range(0, TAU), d = rng.range(0, P.r * .8); tx = P.x + Math.cos(a) * d; tz = P.z + Math.sin(a) * d; }
+    if (rng.chance(0.6)) { const w = POIS.map(P => 1 / (1 + (poiLoad[P.name] || 0) * 1.5)), tot = w.reduce((a, c) => a + c, 0); let r = rng.next() * tot, P = POIS[0]; for (let i = 0; i < POIS.length; i++) { r -= w[i]; if (r <= 0) { P = POIS[i]; break; } } poiLoad[P.name] = (poiLoad[P.name] || 0) + 1; const a = rng.range(0, TAU), d = rng.range(0, P.r * .8); tx = P.x + Math.cos(a) * d; tz = P.z + Math.sin(a) * d; }
     else { const a = rng.range(0, TAU), d = Math.sqrt(rng.next()) * 520; tx = Math.cos(a) * d; tz = Math.sin(a) * d; }
     f.landTarget = [tx, tz];
     const s = (tx - G.bus.sx) * dx + (tz - G.bus.sz) * dz;
@@ -1602,6 +1629,7 @@ function rayFighters(ox, oy, oz, dx, dy, dz, maxT, shooter) {
 function fireGun(f, aimX, aimY, aimZ) {
   const it = f.gun();
   if (!it || f.fireCd > 0 || f.reloadT > 0 || f.using || f.swim || (f.vehicle && f.seat === 0) || f.knocked) return false;
+  noteNoise(f);
   RAY_IGNORE = f.vehicle && f.vehicle.prop ? f.vehicle.prop : null;
   const w = WEAPONS[it.k];
   if (it.mag <= 0) { RAY_IGNORE = null; startReload(f); return false; }
@@ -1712,7 +1740,7 @@ function damage(v, dmg, att, weapon, storm, head, pos) {
   if (!v.alive || G.net === 'client') return;
   if (att && att !== v && att.team === v.team) return;
   if (att && att.kind === 'bot' && v.kind === 'human') dmg *= 0.75;
-  else if (att && att.kind === 'bot' && v.kind === 'bot') dmg *= G.bvb;
+  else if (att && att.kind === 'bot' && v.kind === 'bot') dmg *= farFromPlayers(v) ? G.bvb : Math.max(G.bvb, 0.8);
   const hadSh = v.sh > 0;
   let shHit = 0;
   if (storm) v.hp -= dmg;
@@ -2603,6 +2631,120 @@ function safePoint(f) {
 }
 function inCircle(x, z, cx, cz, r) { return (x - cx) ** 2 + (z - cz) ** 2 <= r * r; }
 
+// ---- hearing: every burst of gunfire leaves a "noise" bots can come and investigate (third-partying)
+function noteNoise(f) {
+  if (!G.noise) G.noise = [];
+  if (G.time - (f._noiseT || -9) < 0.8) return;
+  f._noiseT = G.time; G.noise.push({ x: f.x, z: f.z, t: G.time, team: f.team });
+  if (G.noise.length > 48) G.noise.shift();
+}
+// ---- getting around: through doors when leaving or entering a building, and around anything in the way
+function houseAt(x, z, y) {
+  for (const H of W.houses) if (x > H.x0 + .15 && x < H.x1 - .15 && z > H.z0 + .15 && z < H.z1 - .15 && (y === undefined || (y > H.y - 1 && y < H.y + H.h))) return H;
+  return null;
+}
+function doorInfo(H, s) {
+  const n = s === 'N' ? [0, -1] : s === 'S' ? [0, 1] : s === 'W' ? [-1, 0] : [1, 0];
+  const cx = s === 'W' ? H.x0 : s === 'E' ? H.x1 : H.x, cz = s === 'N' ? H.z0 : s === 'S' ? H.z1 : H.z;
+  return { cx, cz, n, inner: [cx - n[0] * 1.4, cz - n[1] * 1.4], outer: [cx + n[0] * 1.8, cz + n[1] * 1.8], half: H.dw / 2 };
+}
+function nearestDoor(H, x, z) {
+  let best = null, bd = 1e9;
+  for (const s of H.door) { const D = doorInfo(H, s), d = hyp(D.outer[0] - x, D.outer[1] - z); if (d < bd) { bd = d; best = D; } }
+  return best;
+}
+// lined up with the doorway (inside the gap, close to the wall)?
+function inDoorway(D, x, z) {
+  const lat = D.n[0] ? Math.abs(z - D.cz) : Math.abs(x - D.cx), ax = D.n[0] ? Math.abs(x - D.cx) : Math.abs(z - D.cz);
+  return lat < D.half - 0.35 && ax < 2.2;
+}
+// does the line (ax,az)->(bx,bz) pass through the box? (Liang-Barsky)
+function segHitsBox(ax, az, bx, bz, x0, z0, x1, z1) {
+  let t0 = 0, t1 = 1; const dx = bx - ax, dz = bz - az;
+  for (const [p, q] of [[-dx, ax - x0], [dx, x1 - ax], [-dz, az - z0], [dz, z1 - az]]) {
+    if (p === 0) { if (q < 0) return false; continue; }
+    const r = q / p; if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
+  }
+  return t0 < t1;
+}
+// outside, with a building in the way: go round it by the best corner
+function aroundHouses(b, gx, gz) {
+  let H = null, hd = 1e9;
+  for (const h of W.houses) {
+    if (Math.abs(h.x - b.x) > 60 || Math.abs(h.z - b.z) > 60 || b.y > h.y + h.h - 0.5) continue;
+    if (!segHitsBox(b.x, b.z, gx, gz, h.x0 - .6, h.z0 - .6, h.x1 + .6, h.z1 + .6)) continue;
+    const d = hyp(h.x - b.x, h.z - b.z); if (d < hd) { hd = d; H = h; }
+  }
+  if (!H) return [gx, gz];
+  const m = 1.6, C = [[H.x0 - m, H.z0 - m], [H.x1 + m, H.z0 - m], [H.x1 + m, H.z1 + m], [H.x0 - m, H.z1 + m]];
+  const hits = (a, c) => segHitsBox(a[0], a[1], c[0], c[1], H.x0 + .1, H.z0 + .1, H.x1 - .1, H.z1 - .1);
+  const D = (a, c) => hyp(a[0] - c[0], a[1] - c[1]), G2 = [gx, gz];
+  // cost from corner i to the goal going round the building, and the first corner after i on that route
+  const route = i => {
+    if (!hits(C[i], G2)) return [D(C[i], G2), G2];
+    let best = [1e9, G2];
+    for (const s of [1, 3]) {
+      const j = (i + s) % 4, k = (i + 2 * s) % 4;
+      const c = !hits(C[j], G2) ? D(C[i], C[j]) + D(C[j], G2) : D(C[i], C[j]) + D(C[j], C[k]) + D(C[k], G2);
+      if (c < best[0]) best = [c, C[j]];
+    }
+    return best;
+  };
+  let best = null, bs = 1e9;
+  for (let i = 0; i < 4; i++) {
+    const c = C[i], here = D([b.x, b.z], c);
+    if (here < 1.3) { const r = route(i); if (r[0] < bs) { bs = r[0]; best = r[1]; } continue; }   // reached this corner: on to the next
+    if (hits([b.x, b.z], c)) continue;
+    const r = route(i), sc = here + r[0];
+    if (sc < bs) { bs = sc; best = c; }
+  }
+  return best || [gx, gz];
+}
+// cached for a fifth of a second - cheap enough for 60 bots on a Chromebook
+function navPoint(b, gx, gz) {
+  if (b._nav && G.time - b._navT < 0.2 && b._navG[0] === gx && b._navG[1] === gz) return b._nav;
+  b._navT = G.time; b._navG = [gx, gz];
+  return (b._nav = navPointRaw(b, gx, gz));
+}
+function navPointRaw(b, gx, gz) {
+  const Hb = houseAt(b.x, b.z, b.y), Hg = houseAt(gx, gz);
+  if (Hb === Hg) return Hb ? [gx, gz] : aroundHouses(b, gx, gz);
+  if (Hb) { const D = nearestDoor(Hb, gx, gz); if (D) return inDoorway(D, b.x, b.z) ? D.outer : D.inner; }
+  if (Hg && b.y < Hg.y + 2) { const D = nearestDoor(Hg, b.x, b.z); if (D) return inDoorway(D, b.x, b.z) ? D.inner : aroundHouses(b, D.outer[0], D.outer[1]); }
+  return aroundHouses(b, gx, gz);
+}
+// pick a walking direction that isn't straight into a wall, tree, car or build
+const STEER = [0, .45, -.45, .9, -.9, 1.35, -1.35, 1.8, -1.8, 2.4, -2.4];
+function steerDir(b, dx, dz, dt) {
+  b._steerT = (b._steerT || 0) - dt;
+  if (b._steerT <= 0) {
+    b._steerT = 0.25;
+    const pref = b._steerA ? Math.sign(b._steerA) : (b.id % 2 ? 1 : -1);
+    let pick = null;
+    for (const a0 of STEER) {
+      const a = a0 * pref;   // try the side we were already going round first
+      const c = Math.cos(a), s = Math.sin(a), x = dx * c - dz * s, z = dx * s + dz * c;
+      if (!blockedAt(b.x + x * 1.1, b.z + z * 1.1, .42, b.y + .05) && !blockedAt(b.x + x * 2.3, b.z + z * 2.3, .42, b.y + .05)) { pick = a; break; }
+    }
+    b._steerA = pick === null ? (b._steerA || 0) : pick;
+    if (pick === null) b._steerT = 0.6;
+  }
+  const a = b._steerA || 0; if (!a) return [dx, dz];
+  const c = Math.cos(a), s = Math.sin(a);
+  return [dx * c - dz * s, dx * s + dz * c];
+}
+// a roaming spot inside the next circle that isn't on top of other players
+function spreadPoint(b, cx, cz, r) {
+  let best = null, bs = -1;
+  for (let k = 0; k < 4; k++) {
+    const a = Math.random() * TAU, d = Math.sqrt(Math.random()) * r, x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
+    if (!onLand(x, z)) continue;
+    let near = 1e9; for (let i = 0; i < 24; i++) { const o = G.fighters[(b.id * 7 + i * 13) % G.fighters.length]; if (o === b || !o.alive) continue; near = Math.min(near, hyp(o.x - x, o.z - z)); }
+    if (near > bs) { bs = near; best = [x, z]; }
+  }
+  return best || [cx, cz];
+}
+
 function botPickWeapon(b, dist) {
   let best = -1, score = -1;
   b.slots.forEach((s, i) => {
@@ -2635,6 +2777,7 @@ function botTakeLoot(b) {
 function botThink(b) {
   // targets
   b.armed = b.slots.some(s => s && WEAPONS[s.k]);
+  b._far = farFromPlayers(b);
   let best = null, bd = 1e9;
   const range = 45 + 40 * botRamp();   // early bots notice you later
   if (b.aggro && b.aggro.alive && b.aggroT > 0 && b.aggro.phase === 'ground') { best = b.aggro; bd = hyp(best.x - b.x, best.z - b.z); }
@@ -2642,22 +2785,30 @@ function botThink(b) {
     // closest enemy wins, bot or human alike; someone already being shot at by others counts as further away,
     // so bots spread out and fight each other instead of all piling onto one player
     let bs = 1e9;
+    if (b.target && b.target.alive && b.target.phase === 'ground' && G.time - (b.seeT || 0) > 0.25 && G.time - (b.seeT || 0) < 6 && hyp(b.target.x - b.x, b.target.z - b.z) < range + 20) { best = b.target; bs = -1e9; bd = hyp(best.x - b.x, best.z - b.z); }
     for (const o of G.fighters) {
+      if (bs === -1e9) break;
       if (!o.alive || o.team === b.team || o.phase !== 'ground') continue;
       // keep the match paced: when too many have died already, bots mostly leave each other alone
       // (and a bot without a gun never goes looking for a fist fight with another bot)
-      if (o.kind === 'bot' && b.aggro !== o && b.target !== o && (!b.armed || ((b.id * 7 + o.id * 13 + Math.floor(G.time / 15)) % 10) / 10 >= G.bvb * 1.6)) continue;
+      if (o.kind === 'bot' && !b.armed && b.aggro !== o) continue;
+      // pacing for fights nobody is watching (near a real player, bots always fight each other for real)
+      if (o.kind === 'bot' && b._far && b.aggro !== o && b.target !== o && ((b.id * 7 + o.id * 13 + Math.floor(G.time / 15)) % 10) / 10 >= G.bvb * 1.6) continue;
       const d = hyp(o.x - b.x, o.z - b.z);
+      // don't all pile onto the same real player - two or three at a time, unless they shot us or are right here
+      if (o.kind === 'human' && b.aggro !== o && b.target !== o && (o._hunters || 0) >= (G.teamSize > 1 ? 3 : 2) && d > 14) continue;
       const r = o.inBush ? 18 : range;
       if (d > r) continue;
       const crowd = (o._hunters || 0) - (b.target === o ? 1 : 0);
-      const sc = d + crowd * 22 + (o.kind === 'human' ? 6 : 0);
+      const busy = G.time - (o.lastHit || -9) < 4 || G.time - (o._noiseT || -9) < 3;   // already in a fight: easy pickings
+      const sc = d + crowd * 22 + (o.kind === 'human' ? 10 : 0) - (busy ? 12 : 0) - (100 - o.hp) * 0.12;
       if (sc > bs) continue;
       if (!lineClear(b, o)) continue;
       best = o; bs = sc; bd = d;
     }
   }
-  if (best !== b.target) { b.target = best; b.react = 0.35 + (1 - botSkill(b)) * 1.1; }
+  if (best !== b.target) { b.target = best; b.react = 0.35 + (1 - botSkill(b)) * 1.1; b.seeT = G.time; }
+  if (b.target) { if (lineClear(b, b.target)) { b.seeT = G.time; b.lastSeen = [b.target.x, b.target.z]; } }
   const S = G.storm;
   // head for the next circle early - the later the circle, the earlier they leave
   const danger = !inCircle(b.x, b.z, S.ncx, S.ncz, S.nr * 0.85) && (S.state === 'shrink' || S.timer < 25 + S.phase * 5 || !inCircle(b.x, b.z, S.cx, S.cz, S.r));
@@ -2684,8 +2835,14 @@ function botThink(b) {
     const lead = G.fighters.find(o => o.team === b.team && o.kind === 'human' && o.alive) || null;
     if (lead && lead.phase === 'ground' && hyp(lead.x - b.x, lead.z - b.z) > 12) { const a = b.slotIdx * 2.1; b.goal = [lead.x + Math.cos(a) * 4, lead.z + Math.sin(a) * 4]; b.goalKind = 'follow'; return; }
   }
-  // loot
   const guns = b.slots.filter(s => s && WEAPONS[s.k]).length;
+  // third party: head towards a fight we can hear (braver bots more often, everyone more late in the game)
+  if (guns && G.noise && G.noise.length && !(b._far && G.bvb < 0.5) && (b.brave === undefined ? (b.brave = Math.random()) : b.brave) > 0.3 - botRamp() * 0.25) {
+    let nz = null, nd = 70 + 60 * botRamp();
+    for (let i = G.noise.length - 1; i >= 0; i--) { const n = G.noise[i]; if (G.time - n.t > 8) break; if (n.team === b.team) continue; const d = hyp(n.x - b.x, n.z - b.z); if (d < nd && d > 14 && inCircle(n.x, n.z, S.ncx, S.ncz, S.nr)) { nd = d; nz = n; } }
+    if (nz && (guns >= 2 || nd < 45)) { const a = Math.atan2(b.z - nz.z, b.x - nz.x) + ((b.id % 5) - 2) * 0.3; b.goal = [nz.x + Math.cos(a) * 16, nz.z + Math.sin(a) * 16]; b.goalKind = 'third'; return; }
+  }
+  // loot
   if (guns < 2 || b.slots.filter(s => s).length < 4) {
     let tgt = null, td = guns ? 45 : 90;
     for (const c of G.chests) { if (c.opened) continue; const d = hyp(c.x - b.x, c.z - b.z); if (d < td) { td = d; tgt = c; } }
@@ -2698,8 +2855,7 @@ function botThink(b) {
     if (tgt) { b.goal = [tgt.x, tgt.z]; b.goalKind = tgt.opened !== undefined ? 'chest' : 'pickup'; b.loot = tgt; return; }
   }
   if (b.goalKind !== 'roam' || !b.goal || hyp(b.goal[0] - b.x, b.goal[1] - b.z) < 6) {
-    const r = Math.max(8, S.nr * 0.8), a = Math.random() * TAU, d = Math.sqrt(Math.random()) * r;
-    b.goal = [S.ncx + Math.cos(a) * d, S.ncz + Math.sin(a) * d]; b.goalKind = 'roam';
+    b.goal = spreadPoint(b, S.ncx, S.ncz, Math.max(8, S.nr * 0.8)); b.goalKind = 'roam';
   }
 }
 function updateBot(b, dt) {
@@ -2731,10 +2887,26 @@ function updateBot(b, dt) {
     b.strafeT -= dt; if (b.strafeT <= 0) { b.strafeT = 0.6 + Math.random(); b.strafe = -b.strafe; }
     const ux = dx / (d || 1), uz = dz / (d || 1);
     const want = hasGun ? (b.gun() && WEAPONS[b.gun().k].shotgun ? 5 : 18) : 1.8;
-    const fwd = d > want + 4 ? 1 : d < Math.max(2.6, want - 4) ? -0.7 : 0;   // keep a gap - never walk right into someone
-    mx = ux * fwd + (-uz) * b.strafe * 0.8; mz = uz * fwd + ux * b.strafe * 0.8;
+    const hidden = G.time - (b.seeT || 0) > 0.9;
+    if (hidden && hasGun) {
+      // out of sight: walk round to them (through doors / around walls); a build right in the way gets shot down
+      const lx = b.lastSeen ? b.lastSeen[0] : T.x, lz = b.lastSeen ? b.lastSeen[1] : T.z;
+      const [px, pz] = navPoint(b, lx, lz), qx = px - b.x, qz = pz - b.z, ql = hyp(qx, qz) || 1;
+      [mx, mz] = steerDir(b, qx / ql, qz / ql, dt);
+      const h = rayWorld(b.x, b.y + 1.3, b.z, ux, 0, uz, 7, true);
+      if (h && h.kind === 'build' && b.fireCd <= 0 && b.reloadT <= 0) { fireGun(b, b.x + ux * h.t, b.y + 1.3, b.z + uz * h.t); mx *= 0.2; mz *= 0.2; }
+      if (G.time - (b.seeT || 0) > 5) b.target = null;
+    } else {
+      // spread out around the target instead of everyone lining up behind each other
+      const off = ((b.id * 37) % 7 - 3) * 0.28, oa = Math.atan2(b.z - T.z, b.x - T.x) + off;
+      const px = T.x + Math.cos(oa) * want - b.x, pz = T.z + Math.sin(oa) * want - b.z, pl = hyp(px, pz) || 1;
+      const fwd = d > want + 4 ? 1 : d < Math.max(2.6, want - 4) ? -0.7 : 0;   // keep a gap - never walk right into someone
+      const gx = pl > 3 ? px / pl : ux * fwd, gz = pl > 3 ? pz / pl : uz * fwd;
+      mx = gx * Math.abs(fwd || 0.5) + (-uz) * b.strafe * 0.8; mz = gz * Math.abs(fwd || 0.5) + ux * b.strafe * 0.8;
+      if (mx || mz) { const l = hyp(mx, mz) || 1; [mx, mz] = steerDir(b, mx / l, mz / l, dt); }
+    }
     if (!hasGun) { const k = d > 1.9 ? 1 : d < 1.3 ? -0.6 : 0; mx = ux * k + (-uz) * b.strafe * 0.4; mz = uz * k + ux * b.strafe * 0.4; if (d < 2.4) { b.sel = -1; swingPick(b); } }
-    else if (b.react <= 0 && b.fireCd <= 0 && b.reloadT <= 0) {
+    else if (!hidden && b.react <= 0 && b.fireCd <= 0 && b.reloadT <= 0) {
       const sk = botSkill(b), err = (1 - sk) * (0.6 + d * 0.045) + (T.moveAmt > .5 ? 0.4 + (1 - sk) * 0.5 : 0);
       const tx = T.x + (Math.random() - .5) * 2 * err, ty = T.y + (T.knocked ? 0.4 : 1.1) + (Math.random() - .5) * 2 * err * 0.6, tz = T.z + (Math.random() - .5) * 2 * err;
       b.pitch = -Math.atan2(ty - (b.y + 1.35), d);
@@ -2752,7 +2924,11 @@ function updateBot(b, dt) {
     else if (b.using) b.using = false;
     if (b.goalKind !== 'heal' && b.goal) {
       const dx = b.goal[0] - b.x, dz = b.goal[1] - b.z, d = hyp(dx, dz);
-      if (d > 1.2) { mx = dx / d; mz = dz / d; b.yaw = Math.atan2(dx, dz); }
+      if (d > 1.2) {
+        const [px, pz] = navPoint(b, b.goal[0], b.goal[1]), qx = px - b.x, qz = pz - b.z, ql = hyp(qx, qz) || 1;
+        [mx, mz] = steerDir(b, qx / ql, qz / ql, dt); b.yaw = Math.atan2(mx, mz);
+      }
+      if (b.goalKind === 'third' && d < 3) b.goal = null;
       if (b.goalKind === 'storm') { speed = SPRINT; if (!inCircle(b.x, b.z, S.cx, S.cz, S.r) && farFromPlayers(b)) speed *= 1.6; if (d < 3) b.goal = null; }
       if (b.goalKind === 'chest' && b.loot && !b.loot.opened && d < 2.2) {
         b.openT = (b.openT || 0) + dt; mx = mz = 0;
@@ -4704,27 +4880,43 @@ function initAudio() {
     const b = AU.ctx.createBuffer(1, a.length, 22050); const ch = b.getChannelData(0); for (let i = 0; i < a.length; i++) ch[i] = a[i] * g; AU.buf[k] = b;
   }
 }
-function sfx(name, vol, pan) {
+function sfx(name, vol, pan, cutoff) {
   if (!AU.ctx || !AU.buf[name]) return;
   const s = AU.ctx.createBufferSource(); s.buffer = AU.buf[name];
   const g = AU.ctx.createGain(); g.gain.value = vol === undefined ? 0.6 : vol;
-  let node = g;
-  if (pan && AU.ctx.createStereoPanner) { const p = AU.ctx.createStereoPanner(); p.pan.value = pan; g.connect(p); node = p; }
-  s.connect(g); node.connect(AU.master); s.start();
+  s.connect(g); let node = g;
+  // muffled: behind you, far away or behind a wall
+  if (cutoff && cutoff < 16000) { const f = AU.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff; f.Q.value = 0.5; node.connect(f); node = f; }
+  if (pan && AU.ctx.createStereoPanner) { const p = AU.ctx.createStereoPanner(); p.pan.value = pan; node.connect(p); node = p; }
+  node.connect(AU.master); s.start();
 }
 function sfxAt(name, x, y, z, src) {
   if (G && G.net === 'host') netFx(['s', name, x, y, z]);
   playAt(name, x, y, z, src && src === G.me);
 }
-function playAt(name, x, y, z, mine) {
+// 3D sound: left/right from where it is around you, duller when it's behind you, far off or through walls
+function playAt(name, x, y, z, mine, scale) {
   if (!AU.ctx || !G) return;
-  const e = Cam.eye, d = Math.hypot(x - e[0], y - e[1], z - e[2]);
-  if (d > 260) return;
-  const vol = (mine ? 0.55 : 0.6) * Math.pow(Math.max(0, 1 - d / 260), 1.6);
-  if (vol < 0.015) return;
-  const rx = -Math.cos(Cam.yaw), rz = Math.sin(Cam.yaw);
-  const pan = d > 2 ? clamp(((x - e[0]) * rx + (z - e[2]) * rz) / d, -1, 1) * 0.7 : 0;
-  sfx(name, vol, pan);
+  const e = Cam.eye, dx = x - e[0], dy = y - e[1], dz = z - e[2], d = Math.hypot(dx, dy, dz);
+  const loud = name.startsWith('gun') || name.startsWith('shot') || name === 'boom' || name.startsWith('expl');
+  const range = loud ? 300 : name.startsWith('step_') ? 34 : 120;
+  if (d > range) return;
+  let vol = (mine ? 0.55 : 0.6) * Math.pow(Math.max(0, 1 - d / range), loud ? 1.3 : 1.6);
+  vol *= scale === undefined ? 1 : scale;
+  if (vol < 0.006) return;
+  if (mine || d < 1.5) { sfx(name, vol, 0); return; }
+  const hd = Math.hypot(dx, dz) || 1;
+  const side = (dx * -Math.cos(Cam.yaw) + dz * Math.sin(Cam.yaw)) / hd;   // +1 = to your right
+  const front = (dx * Math.sin(Cam.yaw) + dz * Math.cos(Cam.yaw)) / hd;   // +1 = in front of you
+  const pan = clamp(side, -1, 1) * 0.92 * Math.min(1, hd / 3);
+  let cutoff = 18000;
+  if (front < 0) cutoff = Math.min(cutoff, 18000 - (-front) * 13500);   // behind: duller
+  cutoff *= 1 - 0.75 * Math.min(1, d / range);                         // far: duller
+  if (d < 150 && typeof rayWorld === 'function') {                        // through a wall: much duller and quieter
+    const h = rayWorld(e[0], e[1], e[2], dx / d, dy / d, dz / d, d - 1, true);
+    if (h) { cutoff = Math.min(cutoff, 1400); vol *= 0.6; }
+  }
+  sfx(name, vol, pan, Math.max(500, cutoff));
 }
 function loop(name, vol) {
   if (!AU.ctx || !AU.buf[name]) return;
@@ -4769,6 +4961,19 @@ function updateAudio() {
   let hv = 0;
   if (inM) for (const h of G.helis) if (h.spin > 3) { const d = hyp(h.x - Cam.eye[0], h.z - Cam.eye[2]); hv = Math.max(hv, (h.driver === me ? 0.16 : 0.14) * Math.max(0, 1 - d / 220) * Math.min(1, h.spin / 20)); }
   loop('heli_loop', hv);
+  // other players' footsteps, from the direction they're coming from
+  if (inM) {
+    const now = performance.now() / 1000, dt = Math.min(0.1, now - (AU._stepT || now)); AU._stepT = now;
+    for (const f of G.fighters) {
+      if (f === me || !f.alive || f.phase !== 'ground' || f.vehicle || !(f.moveAmt > 0.35) || f.swim) continue;
+      const dx = f.x - Cam.eye[0], dz = f.z - Cam.eye[2]; if (dx * dx + dz * dz > 34 * 34) continue;
+      f._sndStep = (f._sndStep || Math.random() * 0.3) - dt * Math.min(1.5, f.moveAmt);
+      if (f._sndStep > 0) continue;
+      f._sndStep = 0.36;
+      const hard = f.y > groundH(f.x, f.z) + 0.15;
+      playAt('step_' + (hard ? 'h' : 'g') + Math.floor(Math.random() * 4), f.x, f.y, f.z, false, f.moveAmt > 1.1 ? 0.3 : 0.2);
+    }
+  }
 }
 // =====================================================================
 //  App shell: lobby, menus, input, results
