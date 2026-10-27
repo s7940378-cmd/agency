@@ -190,6 +190,8 @@ input[type=text]{font-family:var(--body);font-size:1.1rem;font-weight:700;backgr
 .ftile.bin.over{background:rgba(255,80,60,.35)}
 @media (max-width:800px){.fbody{grid-template-columns:1fr}.fdetail{grid-template-columns:120px 1fr}}
 .clicktoplay{position:absolute;left:50%;bottom:22%;transform:translateX(-50%);background:rgba(0,0,0,.7);padding:12px 20px;border-radius:8px;font-weight:800;font-size:1.3rem}
+#ui>.locktip{pointer-events:none;position:absolute;left:50%;top:22%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:8px 16px;border-radius:8px;font-weight:800;font-size:1rem;animation:lockpulse 1.6s ease-in-out infinite}
+@keyframes lockpulse{50%{opacity:.55}}
 .settings label{display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:700}
 .settings select{font-family:var(--body);font-size:1rem;font-weight:700;background:#080a17;color:var(--text);border:2px solid var(--line);border-radius:6px;padding:4px 8px}
 .lobby.wide #left{grid-column:1/3}.lobby.wide .stage{display:none}
@@ -219,6 +221,11 @@ button.soon{opacity:.75}button.money{background:linear-gradient(90deg,#2ec46a,#1
   .lobby{grid-template-columns:1fr;grid-template-rows:auto;overflow:auto}.lobby.wide #left{grid-column:auto}
   .stage{min-height:160px}
 }
+.sart{position:relative;cursor:pointer}.sart .pvtag{position:absolute;right:6px;bottom:6px;font-size:.6rem;font-weight:900;letter-spacing:.08em;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,.55);opacity:0;transition:opacity .15s}
+.sitem:hover .pvtag{opacity:1}body.touchmode .sart .pvtag{opacity:.85}
+.pvcard .pvrow{display:flex;gap:12px;align-items:center;margin:6px 0 10px}.pvcard .sart{width:96px;height:120px;flex:none}
+.pvcard .pvname{display:block;font-size:1.35rem}.pvcard .row{display:flex;gap:8px}.pvcard .row button{flex:1}
+.pvcard.exo{background:linear-gradient(var(--panel),var(--panel)) padding-box,linear-gradient(135deg,#ff4ad8,#7a5cff,#2affd8,#ffd23a) border-box;border:2px solid transparent}
 /* ---- touch controls (phones / tablets) */
 body.touchmode #gl,body.touchmode #hud{touch-action:none}
 body.touchmode{-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
@@ -1367,7 +1374,7 @@ const YOFF = 1.6;           // build grid height offset
 const GRAV = 24, JUMP_V = 7.6, STEP = 0.6;
 const RUN = 6.3, SPRINT = 8.4, SWIM = 3.4;
 const BUS_Y = 150, BUS_SPEED = 30, BUS_DOOR = 6;
-const GLIDE_AT = 55, FALL_V = 34, GLIDE_V = 6.5, SKY_H = 15, GLIDE_H = 17;
+const GLIDE_AT = 50, FALL_V = 34, GLIDE_V = 6.5, SKY_H = 15, GLIDE_H = 17;
 const HELI_SPEED = 32, HELI_CEIL = 220;
 // the storm edge moves at a walking pace (about 4 m/s at first, slower later) instead of racing in
 // party versus (1v1 / 2v2): a small storm that closes fast
@@ -2306,6 +2313,12 @@ function vanDist(f, v) { const dx = Math.max(0, Math.abs(f.x - v.x) - v.hx), dz 
 function fighterById(id) { const f = G.fighters[id]; return f && f.id === id ? f : G.fighters.find(o => o.id === id) || null; }
 function hasCards(f) { return !!((f.cards && f.cards.length) || f.cardsN > 0); }
 function isCard(p) { return p.item && p.item.k === 'CARD'; }
+// reboot cards only exist for the dead player's own team: everyone else never sees them
+function cardVisible(p) {
+  if (!isCard(p)) return true;
+  const o = fighterById(p.item.of), me = G && G.me;
+  return !!(o && me && o.team === me.team);
+}
 function dropCard(owner, x, y, z, ttl) {
   if (G.teamSize <= 1 || G.over) return;
   if (!G.fighters.some(o => o.alive && o.team === owner.team && o !== owner)) return;
@@ -3119,7 +3132,16 @@ function controlLocal(dt) {
   const shift = kd('sprint') || joyMag > 0.93;   // stick pushed all the way: sprint
   f.pitch = Cam.pitch;
   if (f.phase === 'bus') { if (tp('jump') && G.bus.t >= BUS_DOOR) { act('jump'); if (G.net === 'client') jumpFromBus(f); } return; }
-  if (f.phase === 'sky') { f.yaw = Cam.yaw; updateSky(f, dt, ix, iz, shift); return; }
+  if (f.phase === 'sky') {
+    f.yaw = Cam.yaw;
+    // open or close the glider whenever you like - below 50 m it opens by itself and stays open
+    if (tp('jump')) {
+      const alt = f.y - Math.max(supportH(f.x, f.z, f.y + 1), WATER_Y - 1);
+      if (alt > GLIDE_AT) { f.glide = !f.glide; sfx(f.glide ? 'glider' : 'swing', .45); }
+      else if (!f.glide) { f.glide = true; sfx('glider', .45); }
+    }
+    updateSky(f, dt, ix, iz, shift); return;
+  }
   if (f.phase !== 'ground') return;
   // vehicle
   if (f.vehicle) { controlVehicle(f, dt, shift); return; }
@@ -3754,6 +3776,14 @@ function lobbyFolk(t) {
     f.yaw = Math.PI + Math.sin(t * 0.6 + i * 1.7) * 0.12 + sp[0] * 0.05;
     if (t - f.joined < 2.5) { f.emoteId = 'E_WAVE'; f.emoteT = f.joined; } else if (f.emoteId === 'E_WAVE') f.emoteId = null;   // new arrivals wave
     if (f.me && App.lobbyEmote && t - App.lobbyEmote.t < 8) { f.emoteId = App.lobbyEmote.id; f.emoteT = App.lobbyEmote.t; }
+    f.phase = 'ground'; f.glide = false; f.glider = null; f.contrail = null;
+    const P = f.me && App.preview;
+    if (P) {
+      if (P.cat === 'OUTFITS') f.outfit = P.id;
+      else if (P.cat === 'PICKAXES') { f.pickaxe = P.id; f.emoteId = null; }
+      else if (P.cat === 'GLIDERS') { f.phase = 'sky'; f.glide = true; f.glider = P.id; f.y += 0.5 + Math.sin(t * 1.4) * 0.12; f.emoteId = null; }
+      else if (P.cat === 'TRAILS') { f.phase = 'sky'; f.contrail = P.id; f.y += 0.9 + Math.sin(t * 2) * 0.1; f.emoteId = null; }
+    }
     out.push(f);
   });
   for (const k of [..._lobbyFolk.keys()]) if (!list.some(m => (m.peer || 'me') === k)) _lobbyFolk.delete(k);
@@ -3767,8 +3797,16 @@ function drawLobbyStage(t) {
   const W_ = 8.5, D_ = 3 + rows * 1.9;
   L.push(LOBBY.x, gy + .1, LOBBY.z + D_ / 2 - 1.2, 0, W_, .2, D_, .16, .17, .24, 1);
   L.push(LOBBY.x, gy + .21, LOBBY.z - 1.2, 0, W_, .04, .12, 1, .82, .2, 1);
-  for (const f of folk) { pushCharacter(L, f, t, f.me); L.push(f.x, f.y + .22, f.z, 0, .9, .02, .9, 0, 0, 0, 1); }
+  let trail = null;
+  for (const f of folk) {
+    pushCharacter(L, f, t, f.me);
+    if (f.glide && f.glider) pushGlider(L, f, t);
+    if (f.contrail) trail = f;
+    if (f.phase !== 'sky') L.push(f.x, f.y + .22, f.z, 0, .9, .02, .9, 0, 0, 0, 1);
+  }
   L.draw();
+  // contrail preview: the trail streams up past the character as if falling
+  if (trail) { S3.fx.clear(); emitTrail(trail, t, 4); drawTrails(t); S3.fx.draw(); } else if (TRAIL.length) TRAIL.length = 0;
 }
 function renderScene(t, quality) {
   const canvas = gl.canvas;
@@ -3847,6 +3885,7 @@ function renderScene(t, quality) {
   const me = G.me;
   for (const p of G.pickups) {
     if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > 90 * 90) continue;
+    if (!cardVisible(p)) continue;
     const k = itemKind(p.item), bobY = p.y + 0.35 + Math.sin(t * 2 + p.id) * 0.08;
     if (k === 'gun') pushGun(L, p.item.k, p.item.r, p.x, bobY + .12, p.z, p.spin, 0, 1.15, false, t);
     else if (k === 'card') pushCardModel(L, p.x, bobY + .3, p.z, p.spin, fighterById(p.item.of), t);
@@ -3935,7 +3974,16 @@ function renderScene(t, quality) {
   const lootR2 = 70 * 70;
   for (const p of G.pickups) {
     const k = itemKind(p.item); if (k !== 'gun' && k !== 'heal' && k !== 'move' && k !== 'card') continue;
-    if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > (k === 'card' ? 4 : 1) * lootR2) continue;
+    if ((p.x - ex) ** 2 + (p.z - ez) ** 2 > (k === 'card' ? 9 : 1) * lootR2) continue;
+    if (k === 'card') {
+      if (!cardVisible(p)) continue;
+      // your teammate's card: a tall pulsing beacon you can spot from far away
+      const pu = 0.75 + 0.25 * Math.sin(t * 5);
+      S3.fx.push(p.x, p.y + 6, p.z, t * .5, .5, 12, .5, .35, .7, 1.6, .22 * pu);
+      S3.fx.push(p.x, p.y + 3, p.z, -t * .9, .22, 6, .22, .6, .9, 1.9, .45 * pu);
+      for (let i = 0; i < 2; i++) { const s = 1.2 + ((t * 0.8 + i * 0.5) % 1) * 1.8; S3.fx.push(p.x, p.y + .05, p.z, t * .4 + i, s, .03, s, .35, .7, 1.6, .5 * (1 - ((t * 0.8 + i * 0.5) % 1))); }
+      continue;
+    }
     const r = k === 'card' ? 3 : itemRar(p.item), c = k === 'card' ? [.3, .62, 1] : RARITY[r].rgb, a = (r === 0 ? .55 : 1) * (0.8 + 0.2 * Math.sin(t * 3 + p.id));
     S3.fx.push(p.x, p.y + 1.1, p.z, t * .6, .36, 2.2, .36, c[0], c[1], c[2], .2 * a);
     S3.fx.push(p.x, p.y + .7, p.z, -t * .8, .18, 1.4, .18, c[0], c[1], c[2], .35 * a);
@@ -4362,7 +4410,7 @@ function pushGlider(L, f, t) {
 // contrails: little puffs left behind your hands while you skydive
 const TRAIL = [];
 let _trailT = 0;
-function emitTrail(f, t) {
+function emitTrail(f, t, rise) {
   const C = CONTRAIL_BY[f.contrail] || CONTRAILS[0];
   if (f.glide && C.style === 'wind') return;
   f._trailAcc = (f._trailAcc || 0) + 1;
@@ -4379,7 +4427,7 @@ function emitTrail(f, t) {
     if (C.style === 'pixel') { size = .22; }
     if (C.style === 'bolt') { size = .13; jx = (Math.random() - .5) * .6; jz = (Math.random() - .5) * .6; life = .4; }
     if (TRAIL.length > 900) TRAIL.shift();
-    TRAIL.push({ x: q[0] + jx, y: q[1] + jy, z: q[2] + jz, life, max: life, size, col, style: C.style });
+    TRAIL.push({ x: q[0] + jx, y: q[1] + jy, z: q[2] + jz, life, max: life, size, col, style: C.style, vy: rise || 0 });
   }
 }
 function drawTrails(t) {
@@ -4388,6 +4436,7 @@ function drawTrails(t) {
     const p = TRAIL[i]; p.life -= dt; if (p.life <= 0) { TRAIL.splice(i, 1); continue; }
     const k = p.life / p.max, sz = p.style === 'smoke' ? p.size * (1.6 - k) : p.size * (0.4 + 0.6 * k);
     if (p.style === 'smoke') p.y += dt * .6;
+    if (p.vy) p.y += p.vy * dt;
     S3.fx.push(p.x, p.y, p.z, p.life * 4, sz, p.style === 'wind' ? sz : sz, p.style === 'wind' ? sz * 6 : sz, p.col[0], p.col[1], p.col[2], (p.style === 'wind' ? .35 : p.style === 'smoke' ? .5 : .9) * k);
   }
 }
@@ -4459,6 +4508,15 @@ function drawHud(dt, t) {
     c.save(); c.fillStyle = '#05060a'; c.beginPath(); c.rect(0, 0, HW, HH); c.arc(HW / 2, HH / 2, r, 0, TAU, true); c.fill('evenodd');
     c.strokeStyle = 'rgba(0,0,0,.9)'; c.lineWidth = 2; c.beginPath(); c.moveTo(HW / 2 - r, HH / 2); c.lineTo(HW / 2 + r, HH / 2); c.moveTo(HW / 2, HH / 2 - r); c.lineTo(HW / 2, HH / 2 + r); c.stroke();
     c.fillStyle = '#ff3b30'; c.beginPath(); c.arc(HW / 2, HH / 2, 2.5, 0, TAU); c.fill(); c.restore();
+  }
+  // teammates' reboot cards: a marker with the name and distance so you can go get them
+  if (G.teamSize > 1) for (const p of G.pickups) {
+    if (!isCard(p) || !cardVisible(p)) continue;
+    const d = hyp(p.x - Cam.eye[0], p.z - Cam.eye[2]); if (d > 600) continue;
+    const q = project(p.x, p.y + 1.6, p.z, HW, HH); if (!q) continue;
+    const o = fighterById(p.item.of), x = clamp(q[0], 40 * s, HW - 40 * s), y = clamp(q[1], 60 * s, HH - 120 * s), pu = 0.8 + 0.2 * Math.sin(performance.now() / 160);
+    c.globalAlpha = pu; rrect(x - 11 * s, y - 15 * s, 22 * s, 28 * s, 4, '#3d8bff'); rrect(x - 7 * s, y - 10 * s, 14 * s, 6 * s, 2, '#cfe6ff'); c.globalAlpha = 1;
+    txt((o ? o.name.toUpperCase() + "'S CARD  " : 'REBOOT CARD  ') + Math.round(d) + 'm', x, y + 24 * s, 12, '#8fc4ff', 'center');
   }
   // name tags + damage numbers
   for (const f of G.fighters) {
@@ -4532,7 +4590,7 @@ function drawHud(dt, t) {
   if (!me.alive) { drawSpectate(); return; }
   drawMarkerBeamLabel();
   if (me.phase === 'bus') { txt(G.bus.t >= BUS_DOOR ? 'PRESS ' + K('jump') + ' TO JUMP' : 'BUS DOORS OPENING...', HW / 2, HH * .72, 26, '#fff', 'center', 'd'); txt(K('map') + ' OPENS THE MAP - CLICK IT TO MARK WHERE YOU WANT TO LAND', HW / 2, HH * .72 + 30 * s, 14, '#c8d0ff', 'center'); if (G.showMap) drawBigMap(); return; }
-  if (me.phase === 'sky') { txt(me.glide ? 'GLIDING' : 'SKYDIVING  -  HOLD SHIFT TO DIVE', HW / 2, HH * .78, 18, '#fff', 'center'); txt(Math.max(0, Math.round(me.y - supportH(me.x, me.z, me.y))) + ' m', HW / 2, HH * .82, 24, '#fff', 'center', 'd'); }
+  if (me.phase === 'sky') { { const alt = me.y - supportH(me.x, me.z, me.y), free = alt > GLIDE_AT; txt(me.glide ? (free ? 'GLIDING  -  ' + K('jump') + ' TO SKYDIVE' : 'GLIDING  -  GLIDER STAYS OPEN BELOW ' + GLIDE_AT + ' m') : 'SKYDIVING  -  ' + K('jump') + ' TO GLIDE  -  HOLD ' + K('sprint') + ' TO DIVE', HW / 2, HH * .78, 18, '#fff', 'center'); } txt(Math.max(0, Math.round(me.y - supportH(me.x, me.z, me.y))) + ' m', HW / 2, HH * .82, 24, '#fff', 'center', 'd'); }
   // crosshair
   if (!Cam.scoped && me.phase === 'ground' && (!me.vehicle || me.seat > 0)) drawCrosshair();
   if (G.hitmarker > 0) { c.strokeStyle = '#fff'; c.lineWidth = 2.5; const cx = HW / 2, cy = HH / 2, r = 12; c.beginPath(); c.moveTo(cx - r, cy - r); c.lineTo(cx - 5, cy - 5); c.moveTo(cx + r, cy - r); c.lineTo(cx + 5, cy - 5); c.moveTo(cx - r, cy + r); c.lineTo(cx - 5, cy + 5); c.moveTo(cx + r, cy + r); c.lineTo(cx + 5, cy + 5); c.stroke(); }
@@ -5088,7 +5146,7 @@ function renderLobby() {
     <div class="foot"><span>WINS ${s.wins}</span><span>ELIMINATIONS ${s.elims}</span><span>MATCHES ${s.matches}</span><button id="fs" style="margin-left:auto">FULL SCREEN</button></div>
   </div>`);
   el.querySelector('#fs').onclick = () => { const tip = IS_MOBILE ? 'TAP SHARE > ADD TO HOME SCREEN TO PLAY FULL SCREEN' : 'FULL SCREEN IS NOT AVAILABLE HERE'; try { if (!document.documentElement.requestFullscreen) { uiToast(tip); return; } const r = document.documentElement.requestFullscreen(); if (r && r.catch) r.catch(() => uiToast(tip)); } catch (e) { uiToast(tip); } };
-  el.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { App.tab = b.dataset.tab; sfx('click', .4); renderLobby(); });
+  el.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { App.tab = b.dataset.tab; if (App.tab !== 'LOCKER') App.preview = null; sfx('click', .4); renderLobby(); });
   el.querySelector('#acct').onclick = () => accountMenu();
   const left = el.querySelector('#left'), right = el.querySelector('#right');
   if (App.tab === 'PLAY') {
@@ -5098,7 +5156,7 @@ function renderLobby() {
     right.appendChild(settingsCard());
   } else if (App.tab === 'LOCKER') {
     left.appendChild(lockerCard());
-    right.appendChild(settingsCard());
+    const pv = previewCard(); right.appendChild(pv || settingsCard());
   } else if (App.tab === 'SHOP') {
     left.appendChild(shopCard());
     right.appendChild(rewardsCard());
@@ -5127,6 +5185,7 @@ function playCard() {
   c.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { s.mode = b.dataset.m; writeSave(); sfx('click', .4); Net.lobbyChanged(); renderLobby(); });
   c.querySelector('#play').onclick = () => {
     initAudio(); sfx('click', .5);
+    if (!inParty && guestCanPlay()) setPointerLock(true);
     if (inParty) { uiToast('THE PARTY LEADER STARTS THE MATCH'); return; }
     startFromLobby();
   };
@@ -5227,6 +5286,7 @@ function startFromLobby() {
   beginMatch({ seed, mode, party: [{ name: App.save.name, outfit: App.save.outfit, pickaxe: App.save.pickaxe, glider: App.save.glider, contrail: App.save.contrail }], meIndex: 0, net: null });
 }
 function beginMatch(opt) {
+  App.preview = null;
   setUI($(`<div class="center"><div class="menu"><h2>DROPPING IN</h2><div class="note" style="text-align:center">Getting the island ready...</div></div></div>`));
   setTimeout(() => {
     newMatch(opt);
@@ -5260,7 +5320,7 @@ function matchUI() {
     return;
   }
   if (!Input.locked && !TOUCH.on && G && G.me.alive && !G.over && !G.showMap) {
-    const el = $(`<div class="clicktoplay">${TOUCH.on ? 'TAP TO PLAY' : 'CLICK TO PLAY'}</div>`); el.onclick = () => setPointerLock(true); setUI(el);
+    const el = $(`<div class="locktip">CLICK THE GAME TO AIM WITH YOUR MOUSE</div>`); setUI(el);
     return;
   }
   setUI(null);
@@ -5818,9 +5878,10 @@ function lockerCard() {
   c.querySelectorAll('[data-lc]').forEach(b => b.onclick = () => { App.lockerCat = b.dataset.lc; sfx('click', .3); renderLobby(); });
   c.querySelectorAll('[data-it]').forEach(d => d.onclick = () => {
     const it = C.list.find(x => x.id === d.dataset.it);
-    if (!ownsItem(cat, it)) { uiToast(it.tier ? 'REACH LEVEL ' + it.tier + ' TO UNLOCK' : it.reward ? 'REWARD: ' + it.reward.toUpperCase() : 'WATCH THE ITEM SHOP - IT ROTATES EVERY DAY'); return; }
-    if (cat === 'EMOTES') { App.lobbyEmote = { id: it.id, t: performance.now() / 1000 }; initAudio(); sfx('click', .3); return; }
-    s[C.key] = it.id; writeSave(); Net.lobbyChanged(); sfx('click', .4); renderLobby();
+    if (cat === 'EMOTES') { App.lobbyEmote = { id: it.id, t: performance.now() / 1000 }; initAudio(); sfx('click', .3); if (!ownsItem(cat, it)) { App.preview = { cat, id: it.id }; renderLobby(); } return; }
+    // not yours yet: try it on (shown on your character, with how to get it)
+    if (!ownsItem(cat, it)) { App.preview = { cat, id: it.id }; sfx('click', .3); renderLobby(); return; }
+    App.preview = null; s[C.key] = it.id; writeSave(); Net.lobbyChanged(); sfx('click', .4); renderLobby();
   });
   return c;
 }
@@ -5852,7 +5913,7 @@ function shopCard() {
     const own = ownsItem(cat, it);
     const price = it.usd ? (PAYMENTS.links[it.usd.toFixed(2)] ? money(it.usd) : money(it.usd) + ' · SOON') : '\u{1FA99} ' + it.price;
     return `<div class="sitem ${big ? 'big' : ''} ${it.exotic ? 'exo' : ''}" data-cat="${cat}">
-      ${it.exotic ? '<em class="tag">EXOTIC</em>' : ''}<div class="sart">${itemArt(cat, it)}</div><b>${esc(it.name)}</b><small class="muted">${COS[cat].label}${cat === 'EMOTES' && it.music ? ' ♫' : ''}</small>
+      ${it.exotic ? '<em class="tag">EXOTIC</em>' : ''}<div class="sart" data-pv="${it.id}" title="Preview on your character">${itemArt(cat, it)}<span class="pvtag">PREVIEW</span></div><b>${esc(it.name)}</b><small class="muted">${COS[cat].label}${cat === 'EMOTES' && it.music ? ' ♫' : ''}</small>
       <div class="srow">${cat === 'EMOTES' ? `<button data-try="${it.id}">TRY</button>` : ''}<button data-buy="${it.id}" ${own ? 'disabled' : ''} class="${own ? '' : it.usd ? (PAYMENTS.links[it.usd.toFixed(2)] ? 'money' : 'soon') : 'primary'}">${own ? 'OWNED' : price}</button></div></div>`;
   };
   const c = $(`<div class="card shopcard"><div class="shophead"><h3>ITEM SHOP</h3><div class="reset">NEW ITEMS IN <b id="shopclock">${shopResetText()}</b><small>Every day at ${shopResetLocal()}</small></div></div>
@@ -5860,6 +5921,7 @@ function shopCard() {
     <h4 class="shsec">DAILY</h4><div class="shop">${R.daily.map(x => tile(x, false)).join('')}</div>
     <div class="note">Coins: <b style="color:var(--gold)">${s.coins | 0}</b>. Earn coins from matches, quests and daily sign-in rewards. Exotic items are bought with real money and need a free account so they stay yours.</div></div>`);
   c.querySelectorAll('[data-try]').forEach(b => b.onclick = () => { App.lobbyEmote = { id: b.dataset.try, t: performance.now() / 1000 }; initAudio(); });
+  c.querySelectorAll('[data-pv]').forEach(d => d.onclick = () => { const f = cosFind(d.dataset.pv); if (!f) return; App.preview = { cat: f.cat, id: f.item.id }; App.lockerCat = f.cat; App.tab = 'LOCKER'; if (f.cat === 'EMOTES') { App.lobbyEmote = { id: f.item.id, t: performance.now() / 1000 }; initAudio(); } sfx('click', .3); renderLobby(); });
   c.querySelectorAll('[data-buy]').forEach(b => b.onclick = () => {
     const f = cosFind(b.dataset.buy); if (!f) return;
     const { cat, item } = f;
@@ -5943,6 +6005,33 @@ function redeemMenu() {
     App.modal = false; sfx('chest', .6); uiToast('EVERYTHING UNLOCKED - CHECK YOUR LOCKER'); renderLobby();
   };
   setUI(el);
+}
+
+// ---- the "previewing" card next to the locker: what it is, how to get it, buy it if it's in the shop today
+function howToGet(cat, it) {
+  if (ownsItem(cat, it)) return { text: 'You own this.', own: true };
+  if (it.tier) return { text: 'Unlocks at level ' + it.tier + ' (you are level ' + level() + ').' };
+  if (it.reward) return { text: 'Reward: ' + it.reward + '.' };
+  const R = shopRotation(), inShop = [...R.featured, ...R.daily].some(([, i]) => i.id === it.id);
+  if (inShop) return { text: 'In the Item Shop today' + (it.usd ? ' - exotic.' : '.'), buy: true };
+  return { text: (it.exotic ? 'Exotic item - ' : '') + 'Not in the shop today. The shop changes every day at ' + shopResetLocal() + '.' };
+}
+function previewCard() {
+  const P = App.preview, f = P && cosFind(P.id); if (!f) return null;
+  const { cat, item } = f, H = howToGet(cat, item);
+  const price = item.usd ? (PAYMENTS.links[item.usd.toFixed(2)] ? money(item.usd) : money(item.usd) + ' · SOON') : '\u{1FA99} ' + item.price;
+  const el = $(`<div class="card pvcard ${item.exotic ? 'exo' : ''}"><h3>PREVIEWING</h3>
+    <div class="pvrow"><div class="sart">${itemArt(cat, item)}</div><div><b class="pvname">${esc(item.name)}</b><small class="muted">${COS[cat].label}${item.exotic ? ' · EXOTIC' : ''}</small><div class="note">${esc(H.text)}</div></div></div>
+    <div class="row">${H.buy ? `<button class="${item.usd ? 'money' : 'primary'}" id="pvbuy">${price}</button>` : ''}${H.own && COS[cat].key ? '<button class="primary" id="pveq">EQUIP</button>' : ''}<button id="pvx">DONE</button></div></div>`);
+  el.querySelector('#pvx').onclick = () => { App.preview = null; renderLobby(); };
+  const eq = el.querySelector('#pveq'); if (eq) eq.onclick = () => { App.save[COS[cat].key] = item.id; App.preview = null; writeSave(); Net.lobbyChanged(); renderLobby(); };
+  const bb = el.querySelector('#pvbuy'); if (bb) bb.onclick = () => {
+    if (item.usd) { buyWithMoney(cat, item); return; }
+    const s = App.save; if ((s.coins | 0) < item.price) { uiToast('NOT ENOUGH COINS'); return; }
+    s.coins -= item.price; grantItem(cat, item.id, true); App.preview = null;
+    writeSave(); Net.lobbyChanged(); sfx('chest', .5); uiToast('BOUGHT ' + item.name.toUpperCase()); renderLobby();
+  };
+  return el;
 }
 // =====================================================================
 //  Career stats: recorded at the end of every match, shown on the
@@ -6146,7 +6235,7 @@ function updateTouchUI() {
   show('.fire2', ground && !me.knocked && !me.buildMode);
   label('.fire', me.buildMode ? 'PLACE' : g ? 'FIRE' : me.sel < 0 ? 'SWING' : 'USE');
   show('.jump', ph === 'bus' || ph === 'sky' || (ground) || (veh && me.seat === 0));
-  label('.jump', ph === 'bus' ? 'JUMP' : ph === 'sky' ? 'GLIDE' : veh ? (veh.kind === 'car' ? 'BRAKE' : 'UP') : 'JUMP');
+  label('.jump', ph === 'bus' ? 'JUMP' : ph === 'sky' ? (me.glide ? 'SKYDIVE' : 'GLIDE') : veh ? (veh.kind === 'car' ? 'BRAKE' : 'UP') : 'JUMP');
   show('.dive', ph === 'sky' || (veh && veh.kind !== 'car' && me.seat === 0));
   label('.dive', veh ? 'DOWN' : 'DIVE');
   show('.aim', (ground && !me.buildMode && !!g) || (veh && me.seat > 0));
@@ -6280,6 +6369,7 @@ const Net = {
     this.room.presence(Object.assign(this.myPresence(), { match: data })).catch(() => { });
     this.room.emit('start', data).catch(() => { });
     const me = party.findIndex(p => this.room.peers().some(q => q.peer === p.peer && q.isMe && q.sameTab));
+    this.matchStartT = performance.now();
     beginMatch({ seed, mode, party, meIndex: Math.max(0, me), net: 'host' });
   },
   onStart(msg) {
@@ -6289,7 +6379,8 @@ const Net = {
     const idx = d.party.findIndex(p => mine && p.peer === mine.peer);
     if (idx < 0) { uiToast(guestCanPlay() ? 'THE PARTY IS IN A MATCH - YOU WILL JOIN THE NEXT ONE' : 'MAKE A FREE ACCOUNT TO PLAY MORE MATCHES TODAY'); if (!guestCanPlay()) signupGate(); return; }
     if (!guestCanPlay()) { signupGate(); return; }
-    this.matchNo = d.no; this.host = msg.peer; this.acts = []; this.seq = 0;
+    this.matchNo = d.no; this.host = msg.peer; this.acts = []; this.seq = 0; this.lastSnap = 0; this.matchStartT = performance.now();
+    setPointerLock(true);
     if (App.state === 'results') G = null;
     beginMatch({ seed: d.seed >>> 0, mode: MODES[d.mode] ? d.mode : 'DUOS', party: d.party.slice(0, MAX_PARTY).map(p => ({ peer: p.peer, name: String(p.name).slice(0, 16), outfit: p.outfit, pickaxe: p.pickaxe, glider: p.glider, contrail: p.contrail })), meIndex: idx, net: 'client' });
   },
@@ -6642,7 +6733,15 @@ function clientUpdate(dt) {
   updateCommon(dt);
   if (!me.alive) { G.deathT += dt; if (!G.spectate || !G.spectate.alive) G.spectate = G.fighters.find(f => f.alive && f.team === me.team) || G.fighters.find(f => f.alive) || null; }
   if (G.over) { G.endT += dt; if (G.endT > (G.winnerTeam === me.team ? 7 : 5)) finishMatch(); }
-  if (Net.lastSnap && performance.now() - Net.lastSnap > 12000) { toast('LOST CONNECTION TO THE PARTY LEADER', 3, '#ff7a6a'); Net.lastSnap = 0; setTimeout(() => finishMatch(true), 1500); }
+  {
+    // a loading screen, a busy tab or the leader still loading must never count as a lost connection
+    const now = performance.now();
+    if (Net._cuT && now - Net._cuT > 2500) Net.graceT = now;   // our own game was frozen: start counting again
+    Net._cuT = now;
+    const ref = Math.max(Net.lastSnap || 0, Net.matchStartT || 0, Net.graceT || 0);
+    const limit = Net.lastSnap ? 15000 : 30000;                  // before the first update from the leader, wait longer
+    if (ref && now - ref > limit && !Net.lostShown) { Net.lostShown = true; toast('LOST CONNECTION TO THE PARTY LEADER', 3, '#ff7a6a'); setTimeout(() => { Net.lostShown = false; finishMatch(true); }, 1500); }
+  }
   // share my state ~20 times a second
   Net.presT -= dt;
   if (Net.presT <= 0 && Net.room) {
