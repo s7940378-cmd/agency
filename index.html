@@ -190,6 +190,9 @@ input[type=text]{font-family:var(--body);font-size:1.1rem;font-weight:700;backgr
 .ftile.bin.over{background:rgba(255,80,60,.35)}
 @media (max-width:800px){.fbody{grid-template-columns:1fr}.fdetail{grid-template-columns:120px 1fr}}
 .clicktoplay{position:absolute;left:50%;bottom:22%;transform:translateX(-50%);background:rgba(0,0,0,.7);padding:12px 20px;border-radius:8px;font-weight:800;font-size:1.3rem}
+#ui>.vicbar{position:absolute;left:50%;bottom:9%;transform:translateX(-50%);display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;max-width:92vw}
+.vicbar small{opacity:.65;font-size:.7em;margin-left:6px}
+.vicbar .vtip{width:100%;text-align:center;font-weight:800;font-size:.85rem;background:rgba(0,0,0,.5);padding:6px 12px;border-radius:8px}
 #ui>.locktip{pointer-events:none;position:absolute;left:50%;top:22%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:8px 16px;border-radius:8px;font-weight:800;font-size:1rem;animation:lockpulse 1.6s ease-in-out infinite}
 @keyframes lockpulse{50%{opacity:.55}}
 .settings label{display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:700}
@@ -1423,7 +1426,7 @@ class Fighter {
   }
   cur() { return this.sel >= 0 ? this.slots[this.sel] : null; }
   gun() { const it = this.cur(); return it && WEAPONS[it.k] ? it : null; }
-  eyeY() { return this.y + (this.knocked ? 0.7 : 1.6) - (this.swim ? 1.0 : 0); }
+  eyeY() { return this.y + (this.knocked ? 0.7 : 1.6) - (this.swim ? 1.0 : 0) - (this.crouch ? CROUCH_DROP : 0); }
 }
 
 // ---------------------------------------------------------------- setup
@@ -1671,9 +1674,9 @@ function rayFighters(ox, oy, oz, dx, dy, dz, maxT, shooter) {
     const rad = f.knocked ? 0.48 : 0.4;   // slightly slimmer than the body so shots have to be on target
     if (dd > rad * rad) continue;
     const py = oy + dy * t;
-    const base = f.y - (f.swim ? 1 : 0), top = base + (f.knocked ? 0.75 : 1.78);
+    const base = f.y - (f.swim ? 1 : 0), cr = f.crouch ? CROUCH_DROP : 0, top = base + (f.knocked ? 0.75 : 1.78 - cr);
     if (py < base + 0.05 || py > top) continue;
-    best = t; hit = f; head = !f.knocked && py > base + 1.48;
+    best = t; hit = f; head = !f.knocked && py > base + 1.48 - cr;
   }
   return hit ? { t: best, f: hit, head } : null;
 }
@@ -1685,12 +1688,13 @@ function fireGun(f, aimX, aimY, aimZ) {
   const w = WEAPONS[it.k];
   if (it.mag <= 0) { RAY_IGNORE = null; startReload(f); return false; }
   it.mag--; f.fireCd = 1 / w.rate; f.muzzle = 0.06; f.emote = 0;
-  const gx = f.x + Math.sin(f.yaw - 0.5) * 0.45, gy = f.y + 1.35 - (f.swim ? 1 : 0), gz = f.z + Math.cos(f.yaw - 0.5) * 0.45;
+  const gx = f.x + Math.sin(f.yaw - 0.5) * 0.45, gy = f.y + 1.35 - (f.swim ? 1 : 0) - (f.crouch ? CROUCH_DROP : 0), gz = f.z + Math.cos(f.yaw - 0.5) * 0.45;
   let dx = aimX - gx, dy = aimY - gy, dz = aimZ - gz; const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
   let spread = w.spread;
   if (f.ads) spread *= w.scope ? 0.02 : 0.5;
   if (f.moveAmt > 0.5) spread *= 1.3;
   if (!f.grounded) spread *= 1.5;
+  else if (f.crouch) spread *= 0.7;
   const dmg = w.dmg * RAR_DMG[it.r];
   sfxAt('gun_' + (w.shotgun ? 'pump' : it.k === 'SNIPER' ? 'sniper' : it.k === 'PISTOL' ? 'pistol' : it.k === 'SMG' ? 'smg' : 'ar'), f.x, f.y, f.z, f);
   let anyHit = false;
@@ -1872,8 +1876,8 @@ function checkEnd() {
     const alive = G.fighters.filter(f => f.alive);
     G.winner = alive.find(f => f.kind === 'human') || alive[0] || null;
     for (const f of alive) { if (f.knocked) revive(f); f.place = 1; f.emote = 1; }
-    if (G.winnerTeam === G.me.team) { G.me.place = 1; sfx('victory', 0.8); confetti(); }
-    setPointerLock(false);
+    if (G.winnerTeam === G.me.team) { G.me.place = 1; sfx('victory', 0.8); confetti(); } else setPointerLock(false);
+    matchUI();
   }
 }
 
@@ -1962,6 +1966,7 @@ function removeBuild(b, fx) {
   if (!G.builds.has(b.key)) return;
   G.builds.delete(b.key); gridRemove(b); const i = W._builds.indexOf(b); if (i >= 0) W._builds.splice(i, 1);
   b.dead = true; G.buildVer++;
+  if (G.net === 'host') (G.buildGone || (G.buildGone = [])).push({ key: b.key, t: G.time, fx: fx !== false });
   if (fx !== false) burst((b.x0 + b.x1) / 2, b.y0 + 1.5, (b.z0 + b.z1) / 2, MATS[b.mat].col, 12, 5);
 }
 function damageBuild(b, dmg) {
@@ -2241,22 +2246,34 @@ function updateNades(dt) {
     if (h || ny <= groundH(nx, nz) || n.t > 3) {
       const ex = h ? n.x + (nx - n.x) * h.t / sp : nx, ez = h ? n.z + (nz - n.z) * h.t / sp : nz, ey = h ? n.y + (ny - n.y) * h.t / sp : Math.max(ny, groundH(nx, nz));
       G.nades.splice(i, 1);
-      if (n.visual) continue;
+      if (n.visual) continue;   // a friend's copy: the leader sends the blast itself
       shockwave(ex, ey, ez);
       continue;
     }
     n.x = nx; n.y = ny; n.z = nz;
   }
 }
-function shockwave(x, y, z) {
-  burst(x, y + 0.5, z, [.45, .75, 1], 16, 9); burst(x, y + 0.5, z, [1, 1, 1], 8, 5);
+const CROUCH_DROP = 0.42;   // how much lower you are when crouching
+const SHOCK_R = 9;
+const VICTORY_T = 60;   // seconds winners can run around and emote before the results screen   // blast radius in metres
+function shockFx(x, y, z) {
+  burst(x, y + 0.5, z, [.45, .75, 1], 22, 11); burst(x, y + 0.5, z, [1, 1, 1], 10, 6);
+  G.shockRings = (G.shockRings || []).concat([{ x, y, z, t: performance.now() / 1000 }]).slice(-6);
   sfxAt('boom', x, y, z); if (hyp(G.me.x - x, G.me.z - z) < 40) G.shake = Math.max(G.shake, 6);
+}
+// like the real thing: everyone inside the blast gets launched - you, your team, enemies, knocked players,
+// people standing on builds or already in the air - with the same strong push, straight away from the blast
+function shockwave(x, y, z) {
+  shockFx(x, y, z);
+  netFx(['sw', x, y, z]);
   for (const f of G.fighters) {
-    if (!f.alive || f.phase !== 'ground' || f.vehicle) continue;
-    const dx = f.x - x, dz = f.z - z, d = Math.hypot(dx, f.y - y, dz);
-    if (d > 7.5) continue;
-    const hd = Math.hypot(dx, dz) || 1, push = 22 * (1 - d / 10);
-    const kx = dx / hd * push, kz = dz / hd * push, vy = 18 + 4 * (1 - d / 7.5);
+    if (!f.alive || f.vehicle || f.phase !== 'ground') continue;
+    const dx = f.x - x, dz = f.z - z, dy = f.y + 0.9 - y, hd = Math.hypot(dx, dz);
+    if (hd > SHOCK_R || Math.abs(dy) > SHOCK_R * 0.8) continue;
+    const k = 1 - 0.25 * (hd / SHOCK_R);                       // barely weaker at the edge
+    const ux = hd > 0.3 ? dx / hd : Math.sin(f.yaw), uz = hd > 0.3 ? dz / hd : Math.cos(f.yaw);
+    const push = 20 * k, kx = ux * push, kz = uz * push, vy = 20 * k + 2;
+    f.crouch = false;
     if (f.net && f !== G.me) netMine(f, 'kb', [r1(kx), r1(vy), r1(kz)]); else launch(f, kx, vy, kz);
   }
 }
@@ -3044,7 +3061,7 @@ function tapped(code) { return Input.pressed.has(code); }
 // ---- key binds (changed in Settings > Key binds, saved in the browser)
 const BIND_DEFS = [
   ['fwd', 'Move forward', 'KeyW'], ['back', 'Move back', 'KeyS'], ['left', 'Move left', 'KeyA'], ['right', 'Move right', 'KeyD'],
-  ['jump', 'Jump / helicopter up', 'Space'], ['sprint', 'Sprint / helicopter down', 'ShiftLeft'], ['use', 'Pick up / search / revive', 'KeyE'],
+  ['jump', 'Jump / helicopter up', 'Space'], ['sprint', 'Sprint / helicopter down', 'ShiftLeft'], ['crouch', 'Crouch (tap to toggle)', 'ControlLeft'], ['use', 'Pick up / search / revive', 'KeyE'],
   ['scope', 'Aim / scope', 'Mouse2'], ['reload', 'Reload', 'KeyR'], ['pickaxe', 'Pickaxe / leave helicopter', 'KeyF'], ['build', 'Build mode', 'KeyQ'], ['edit', 'Edit build', 'KeyG'],
   ['wall', 'Wall', 'KeyZ'], ['floor', 'Floor', 'KeyX'], ['ramp', 'Ramp', 'KeyC'], ['cone', 'Cone', 'KeyV'], ['mat', 'Change material', 'KeyT'],
   ['drop', 'Drop item', 'Backspace'], ['inv', 'Inventory', 'Tab'], ['map', 'Map', 'KeyM'], ['emote', 'Emote wheel', 'KeyB'],
@@ -3053,7 +3070,7 @@ const BIND_DEFS = [
 let BINDS = {};
 function loadBinds() { BINDS = {}; const sv = (App.save && App.save.binds) || {}; for (const [k, , d] of BIND_DEFS) BINDS[k] = typeof sv[k] === 'string' ? sv[k] : d; }
 function kd(a) { const c = BINDS[a]; return Input.keys.has(c) || (c === 'ShiftLeft' && Input.keys.has('ShiftRight')); }
-function tp(a) { return Input.pressed.has(BINDS[a]); }
+function tp(a) { const c = BINDS[a]; return Input.pressed.has(c) || (c === 'ControlLeft' && Input.pressed.has('ControlRight')); }
 function keyLabel(code) {
   if (!code) return '-';
   if (code.startsWith('Key')) return code.slice(3);
@@ -3121,7 +3138,7 @@ function doAction(f, name, a, b) {
 
 function controlLocal(dt) {
   const f = G.me;
-  if (!f.alive || G.over && G.winnerTeam === f.team) return;
+  if (!f.alive) return;   // (winners keep moving around and dancing on the victory screen)
   const fy = Math.sin(Cam.yaw), fz = Math.cos(Cam.yaw), rx = -Math.cos(Cam.yaw), rz = Math.sin(Cam.yaw);
   let ix = 0, iz = 0;
   if (kd('fwd')) { ix += fy; iz += fz; } if (kd('back')) { ix -= fy; iz -= fz; }
@@ -3142,9 +3159,9 @@ function controlLocal(dt) {
     }
     updateSky(f, dt, ix, iz, shift); return;
   }
-  if (f.phase !== 'ground') return;
+  if (f.phase !== 'ground') { f.crouch = false; return; }
   // vehicle
-  if (f.vehicle) { controlVehicle(f, dt, shift); return; }
+  if (f.vehicle) { f.crouch = false; controlVehicle(f, dt, shift); return; }
   // selection
   for (let i = 0; i < 5; i++) if (tp('slot' + (i + 1))) { if (f.sel !== i) { f.sel = i; f.reloadT = 0; f.using = false; } f.buildMode = false; }
   if (tp('pickaxe')) { f.sel = -1; f.buildMode = false; f.using = false; }
@@ -3158,12 +3175,16 @@ function controlLocal(dt) {
   }
   if (tp('mat')) buildMat = MAT_ORDER[(MAT_ORDER.indexOf(buildMat) + 1) % 3];
   if (tp('reload')) act('reload');
+  // crouch: tap to duck, tap again (or sprint / jump) to stand. Slower, quieter, steadier aim, smaller target
+  if (tp('crouch') && !f.knocked && !f.swim) { f.crouch = !f.crouch; if (f.crouch) f.emoteId = null; sfx('step_h0', 0.08); }
+  if (f.knocked || f.swim || (f.crouch && shift)) f.crouch = false;
   if (tp('drop')) act('drop');
   // ads / move
   f.ads = kd('scope') && !f.buildMode && !!f.gun() && !f.swim && !f.knocked;
   let speed = RUN;
   if (shift && !f.ads && !f.using && !Input.mb[0]) speed = SPRINT;
   if (f.using) speed *= 0.4; else if (f.ads) speed *= 0.65;
+  if (f.crouch) speed = RUN * (f.ads ? 0.4 : 0.55);
   if (f.swim) speed = SWIM;
   if (f.knocked) speed = RUN * 0.3;
   f.yaw = Cam.yaw;
@@ -3171,13 +3192,13 @@ function controlLocal(dt) {
   if (joyMag && joyMag < 0.6) speed *= 0.45 + joyMag * 0.9;   // a small push walks
   if (il > 0) { moveFighter(f, ix * speed, iz * speed, dt); f.emote = 0; f.emoteId = null; }
   f.moveAmt = hyp(f.x - ox, f.z - oz) / dt / RUN;
-  if (f.moveAmt > 0.3 && f.grounded) { f.stepT = (f.stepT || 0) - dt * speed / RUN; if (f.stepT <= 0) { f.stepT = 0.36; if (f.swim) sfx('swim', 0.14); else { const hard = f.y > groundH(f.x, f.z) + 0.15; sfx('step_' + (hard ? 'h' : 'g') + Math.floor(Math.random() * 4), (speed > RUN ? 0.085 : 0.06) * (0.8 + Math.random() * 0.4)); } } }
+  if (f.moveAmt > 0.3 && f.grounded) { f.stepT = (f.stepT || 0) - dt * speed / RUN; if (f.stepT <= 0) { f.stepT = 0.36; if (f.swim) sfx('swim', 0.14); else { const hard = f.y > groundH(f.x, f.z) + 0.15; sfx('step_' + (hard ? 'h' : 'g') + Math.floor(Math.random() * 4), (speed > RUN ? 0.085 : f.crouch ? 0.03 : 0.06) * (0.8 + Math.random() * 0.4)); } } }
   // a short grace window: a jump pressed just after running off a slope or edge still works
   // running fast down a hill you skim just above the slope: being that close still counts as on the ground
   const canJump = f.grounded || (f.vy <= 0 && (G.time - (f.lastGround || -9) < 0.18 || f.y - Math.max(supportH(f.x, f.z, f.y + 0.1), groundH(f.x, f.z)) < 0.7));
-  if (tp('jump') && canJump && !f.swim && !f.knocked) { f.vy = JUMP_V; f.grounded = false; f.lastGround = -9; f.peakY = f.y; f.airGap = 0; sfx('jump', 0.25); }
+  if (tp('jump') && canJump && !f.swim && !f.knocked) { f.crouch = false; f.vy = JUMP_V; f.grounded = false; f.lastGround = -9; f.peakY = f.y; f.airGap = 0; sfx('jump', 0.25); }
   // fire / build / heal
-  const lmb = Input.mb[0] && Input.locked;
+  const lmb = Input.mb[0] && Input.locked && !G.over;
   if (f.emoteId && (lmb || f.buildMode || f.ads || !f.grounded || f.knocked || f.vehicle)) f.emoteId = null;   // doing anything stops a dance
   if (lmb && f.buildMode && !f.swim && !f.knocked) {
     G.buildHold = (G.buildHold || 0) - dt;
@@ -3243,7 +3264,7 @@ function updateCamera(dt) {
     for (const o of G.fighters) {
       if (o === f || !o.alive || o.team === f.team || o.phase !== 'ground') continue;
       const dx = o.x - Cam.eye[0], dz = o.z - Cam.eye[2], hd = Math.hypot(dx, dz); if (hd > 90 || hd < 1) continue;
-      const ty = Math.atan2(dx, dz), tp = -Math.atan2(o.y + (o.knocked ? 0.4 : 1.15) - Cam.eye[1], hd);
+      const ty = Math.atan2(dx, dz), tp = -Math.atan2(o.y + (o.knocked ? 0.4 : o.crouch ? 0.8 : 1.15) - Cam.eye[1], hd);
       const e = Math.hypot(angDiff(Cam.yaw, ty), tp - Cam.pitch); if (e < bd && lineClear(f, o)) { bd = e; best = [ty, tp]; }
     }
     if (best) { const k = Math.min(1, dt * (f.ads ? 7 : 4.5)); Cam.yaw += angDiff(Cam.yaw, best[0]) * k; Cam.pitch += (best[1] - Cam.pitch) * k; }
@@ -3258,10 +3279,11 @@ function updateCamera(dt) {
   else {
     const rx = Math.cos(Cam.yaw), rz = -Math.sin(Cam.yaw);
     const sh = view === f ? (f.ads ? 0.75 : 0.55) : 0;
-    px = view.x - rx * sh; pz = view.z - rz * sh; py = view.y + (view.knocked ? 0.9 : 1.75) - (view.swim ? 1 : 0);
+    view.ck = (view.ck || 0) + ((view.crouch ? 1 : 0) - (view.ck || 0)) * Math.min(1, dt * 14);
+    px = view.x - rx * sh; pz = view.z - rz * sh; py = view.y + (view.knocked ? 0.9 : 1.75) - (view.swim ? 1 : 0) - view.ck * CROUCH_DROP;
     dist = view === f && f.ads ? 1.9 : 3.4; fov = view === f && f.ads ? 52 : 72;
     const g = view === f && f.gun();
-    if (f.ads && g && WEAPONS[g.k].scope) { Cam.scoped = true; dist = 0; fov = 16; px = view.x; pz = view.z; py = view.y + 1.6; }
+    if (f.ads && g && WEAPONS[g.k].scope) { Cam.scoped = true; dist = 0; fov = 16; px = view.x; pz = view.z; py = view.y + 1.6 - view.ck * CROUCH_DROP; }
   }
   // keep the camera out of walls
   if (dist > 0) {
@@ -3365,7 +3387,7 @@ function updateMatch(dt) {
     G.deathT += dt;
     if (!G.spectate || !G.spectate.alive) { const a = G.fighters.filter(o => o.alive); G.spectate = a.sort((p, q) => hyp(p.x - G.me.x, p.z - G.me.z) - hyp(q.x - G.me.x, q.z - G.me.z))[0] || null; }
   }
-  if (G.over) { G.endT += dt; if (G.endT > (G.winnerTeam === G.me.team ? 7 : 5)) finishMatch(); }
+  if (G.over) { G.endT += dt; if (G.endT > (G.winnerTeam === G.me.team ? VICTORY_T : 5)) finishMatch(); }
   netHostTick(dt);
 }
 function updateRevives(dt) {
@@ -3989,6 +4011,13 @@ function renderScene(t, quality) {
     S3.fx.push(p.x, p.y + .7, p.z, -t * .8, .18, 1.4, .18, c[0], c[1], c[2], .35 * a);
     S3.fx.push(p.x, p.y + .04, p.z, t * .4, 1.3, .03, 1.3, c[0], c[1], c[2], .4 * a);
   }
+  // shockwave blast: a blue ring that shoots out to the edge of the radius
+  if (G.shockRings) for (const r of G.shockRings) {
+    const e = performance.now() / 1000 - r.t; if (e > 0.6) continue;
+    const k = Math.min(1, e / 0.35), rad = 1 + (SHOCK_R - 1) * (1 - (1 - k) * (1 - k)), a = 0.85 * (1 - e / 0.6), n = 28;
+    for (let i = 0; i < n; i++) { const an = i / n * TAU; S3.fx.push(r.x + Math.sin(an) * rad, r.y + .4, r.z + Math.cos(an) * rad, an, rad * TAU / n * 1.05, .5, .12, .45, .8, 1.8, a); }
+    S3.fx.push(r.x, r.y + 1.5, r.z, e * 4, rad * 0.5, 3 * (1 - k) + .2, rad * 0.5, .6, .9, 2, a * 0.25);
+  }
   drawRebootFx(t, ex, ez);
   // drop marker beams (yours and your teammates'): no fog so you can see them from the bus; each stays until its owner lands
   for (const mk of activeMarkers()) {
@@ -4071,6 +4100,8 @@ function pushCharacter(L, f, t, isMe) {
   const animId = !sitting && !air && (f.anim || 0) < 0.2 ? (f.emoteId && EMOTE_BY[f.emoteId] ? EMOTE_BY[f.emoteId].anim : f.emote ? 'hype' : null) : null;
   const E = animId ? emotePose(animId, t - (f.emoteT || 0)) : null;
   if (E) { yaw += E.spin; by += E.lift; }
+  const ck = f.rck = (f.rck || 0) + ((f.crouch && !air && !sitting && !E && !f.knocked ? 1 : 0) - (f.rck || 0)) * 0.3;   // crouching: knees bent, body lower
+  by -= ck * 0.33;
   let F = cframe(f, bx, by, bz, yaw);
   if (E && E.slide) { const q = cp(F, 0, 0, E.slide); F = cframe(f, q[0], by, q[2], yaw); }
   f._rx = F.bx; f._ry = F.by; f._rz = F.bz;
@@ -4103,8 +4134,9 @@ function pushCharacter(L, f, t, isMe) {
   else if (E) { leg(-hipX, E.thighR, E.kneeR); leg(hipX, E.thighL, E.kneeL); }
   else {
     const a = f.anim || 0, ph = f.walk;
-    leg(-hipX, w, a * 1.1 * Math.max(0, -Math.cos(ph)));
-    leg(hipX, -w, a * 1.1 * Math.max(0, Math.cos(ph)));
+    const cw = w * (1 - ck * 0.5), kb = 1 - ck * 0.5;
+    leg(-hipX, cw - 1.1 * ck, a * 1.1 * kb * Math.max(0, -Math.cos(ph)) + 1.75 * ck);
+    leg(hipX, -cw - 1.1 * ck, a * 1.1 * kb * Math.max(0, Math.cos(ph)) + 1.75 * ck);
   }
   // ---- torso (leaning/twisting for dances)
   const tw = E ? E.twist : 0, lean = E ? E.lean : 0;
@@ -4641,6 +4673,7 @@ function drawHud(dt, t) {
     txt('#1', HW / 2, HH * .3, 70, '#ffd83a', 'center', 'd');
     txt('VICTORY!', HW / 2, HH * .3 + 64 * s, 54, '#fff', 'center', 'd');
     txt('LAST AGENTS STANDING', HW / 2, HH * .3 + 108 * s, 20, '#ffd83a', 'center');
+    if (!TOUCH.on) txt(K('emote') + ' EMOTE     ENTER CONTINUE     (' + Math.max(0, Math.ceil(VICTORY_T - G.endT)) + ')', HW / 2, HH * .3 + 138 * s, 15, '#fff', 'center');
   }
   if (G.showMap) drawBigMap();
 }
@@ -5299,7 +5332,7 @@ function beginMatch(opt) {
 function matchUI() {
   if (App.state !== 'match' || App.modal) return;
   if (G && G.invOpen && !App.paused) { if (G.me.alive && !G.over) { invUI(); return; } G.invOpen = false; }
-  if (G && G.emoteOpen && !App.paused) { if (G.me.alive && !G.over) { emoteWheelUI(); return; } G.emoteOpen = false; }
+  if (G && G.emoteOpen && !App.paused) { if (G.me.alive && (!G.over || G.winnerTeam === G.me.team)) { emoteWheelUI(); return; } G.emoteOpen = false; }
   if (App.paused) {
     const el = $(`<div class="center"><div class="menu"><h2>MENU</h2>
       <button class="primary" id="res">RESUME</button>
@@ -5317,6 +5350,15 @@ function matchUI() {
     setUI(el);
     el.querySelector('#spec').onclick = () => { const a = G.fighters.filter(f => f.alive); if (!a.length) return; const i = a.indexOf(G.spectate); G.spectate = a[(i + 1) % a.length]; };
     el.querySelector('#lob').onclick = () => finishMatch(true);
+    return;
+  }
+  if (G && G.over && G.me.alive && G.winnerTeam === G.me.team && !App.paused) {
+    // victory: run around, emote, then carry on when you're ready
+    const el = $(`<div class="vicbar"><button id="vem">EMOTE <small>${esc(K('emote'))}</small></button><button class="primary" id="vgo">CONTINUE <small>ENTER</small></button>
+      ${!Input.locked && !TOUCH.on ? '<div class="vtip">CLICK THE GAME TO LOOK AROUND</div>' : ''}</div>`);
+    setUI(el);
+    el.querySelector('#vem').onclick = e => { e.stopPropagation(); toggleEmotes(true); };
+    el.querySelector('#vgo').onclick = e => { e.stopPropagation(); finishMatch(); };
     return;
   }
   if (!Input.locked && !TOUCH.on && G && G.me.alive && !G.over && !G.showMap) {
@@ -5390,18 +5432,22 @@ function initInput() {
       if (G && G.showMap) { toggleMap(false); return; }
       if (G && G.invOpen) { toggleInventory(false); return; }
       if (G && G.emoteOpen) { toggleEmotes(false); return; }
+      if (G && G.over) return;   // the victory screen: Esc just frees the mouse
       if (G && G.me.alive) { App.paused = !App.paused; matchUI(); if (!App.paused) setPointerLock(true); }
       return;
     }
     if (e.code === BINDS.map && G) { toggleMap(); return; }
     if (e.code === BINDS.inv && G && !e.repeat) { toggleInventory(); return; }
     if (e.code === BINDS.emote && G && App.state === 'match' && !e.repeat) { toggleEmotes(); return; }
+    if (e.code === 'Enter' && G && G.over && G.winnerTeam === G.me.team && !G.emoteOpen) { finishMatch(); return; }
     if (G && G.emoteOpen && /^Digit[1-9]$/.test(e.code)) { const list = EMOTES.filter(ownsEmote), em = list[+e.code.slice(5) - 1]; if (em) { playEmote(G.me, em.id); toggleEmotes(false); } return; }
     if (!e.repeat) Input.pressed.add(e.code);
     Input.keys.add(e.code);
   });
   window.addEventListener('keyup', e => { Input.keys.delete(e.code); });
   window.addEventListener('blur', () => { Input.keys.clear(); Input.mb = [false, false, false]; Input.joy = null; });
+  // Ctrl is crouch, and Ctrl+W closes the tab in Chrome: ask before leaving in the middle of a match
+  window.addEventListener('beforeunload', e => { if (App.state === 'match' && G && G.me && G.me.alive && !G.over) { e.preventDefault(); e.returnValue = ''; } });
   // phone: switching apps pauses the match
   document.addEventListener('visibilitychange', () => { if (document.hidden && TOUCH.on && App.state === 'match' && G && G.me.alive && !G.over && !App.paused) { App.paused = true; Input.keys.clear(); Input.mb = [false, false, false]; Input.joy = null; matchUI(); } });
   // the first touch anywhere unlocks sound on phones
@@ -5472,7 +5518,7 @@ function emoteWheelUI() {
 }
 function playEmote(f, id) {
   if (!f.alive || f.phase !== 'ground' || f.vehicle || f.knocked) return;
-  f.emoteId = id; f.emoteT = performance.now() / 1000; f.emoteAt = G.time; f.buildMode = false; f.using = false; f.ads = false;
+  f.emoteId = id; f.emoteT = performance.now() / 1000; f.emoteAt = G.time; f.crouch = false; f.buildMode = false; f.using = false; f.ads = false;
 }
 function toggleInventory(on) {
   if (!G || App.state !== 'match') return;
@@ -6223,7 +6269,7 @@ function updateTouchUI() {
   if (!on) return;
   buildTouchUI();
   const el = document.getElementById('touch');
-  const me = G && G.me, live = App.state === 'match' && me && me.alive && !App.paused && !G.over;
+  const me = G && G.me, live = App.state === 'match' && me && me.alive && !App.paused && (!G.over || G.winnerTeam === me.team);
   const overlay = live && (G.showMap || G.invOpen || G.emoteOpen);
   el.className = !live ? 'off' : overlay ? 'overlay' : '';
   if (!live) { Input.joy = null; return; }
@@ -6420,7 +6466,7 @@ function netApplyRemote(f, dt) {
     f.glide = !!st.gl; f.swim = !!st.sw; f.grounded = !!st.gr;
   }
   { const em = EMOTE_BY[st.em] ? st.em : null; if (em !== f.emoteId) { f.emoteId = em; f.emoteT = performance.now() / 1000; } }
-  f.yaw = +st.yaw || 0; f.pitch = +st.pi || 0; f.ads = !!st.ads; f.buildMode = !!st.bm; f.moveAmt = +st.mv || 0;
+  f.yaw = +st.yaw || 0; f.pitch = +st.pi || 0; f.ads = !!st.ads; f.crouch = !!st.cr; f.buildMode = !!st.bm; f.moveAmt = +st.mv || 0;
   if (st.sel !== f.sel && st.sel >= -1 && st.sel < 5) { f.sel = st.sel | 0; f.reloadT = 0; f.using = false; }
   // vehicle
   if (Array.isArray(st.veh)) {
@@ -6486,7 +6532,7 @@ function itemDecode(c) {
 }
 function fighterRow(f) {
   const ph = f.phase === 'bus' ? 0 : f.phase === 'sky' ? 1 : 2;
-  const flags = ph | (f.glide ? 4 : 0) | (f.knocked ? 8 : 0) | (f.swim ? 16 : 0) | (f.muzzle > 0 ? 32 : 0) | (f.buildMode ? 64 : 0) | (f.vehicle ? 128 : 0) | (f.ads ? 256 : 0) | (f.using ? 512 : 0) | (f.emote ? 1024 : 0) | (f.inBush ? 2048 : 0) | (f.hurt > 0.1 ? 4096 : 0);
+  const flags = ph | (f.glide ? 4 : 0) | (f.knocked ? 8 : 0) | (f.swim ? 16 : 0) | (f.muzzle > 0 ? 32 : 0) | (f.buildMode ? 64 : 0) | (f.vehicle ? 128 : 0) | (f.ads ? 256 : 0) | (f.using ? 512 : 0) | (f.emote ? 1024 : 0) | (f.inBush ? 2048 : 0) | (f.hurt > 0.1 ? 4096 : 0) | (f.crouch ? 8192 : 0);
   const it = f.cur(); let held = -1;
   if (it && WEAPONS[it.k]) held = GUN_KEYS.indexOf(it.k) * 5 + it.r; else if (it && HEALS[it.k]) held = 100 + HEAL_KEYS.indexOf(it.k);
   return [f.id, r1(f.x), r1(f.y), r1(f.z), Math.round(f.yaw * 100) / 100, flags, Math.ceil(f.hp), Math.ceil(f.sh), f.sel, held, Math.round(f.pitch * 100) / 100];
@@ -6540,13 +6586,20 @@ function netHostTick(dt) {
     const bits = arr => { let s = ''; for (let i = 0; i < arr.length; i += 6) { let v = 0; for (let j = 0; j < 6; j++) if (arr[i + j]) v |= 1 << j; s += String.fromCharCode(48 + v); } return s; };
     const ch = []; for (const c of G.chests) ch.push(c.opened ? 1 : 0);
     const bx = []; for (const c of G.boxes) bx.push(c.opened ? 1 : 0);
+    // builds: as many as fit, carrying on from where the last message stopped (nothing is ever cut off),
+    // plus the builds that were really destroyed, so friends only break walls that actually broke
     const all = [...G.builds.values()];
-    const per = 110, chunks = Math.max(1, Math.ceil(all.length / per));
-    Net.buildCycle = (Net.buildCycle + 1) % chunks;
-    const part = all.slice(Net.buildCycle * per, Net.buildCycle * per + per).map(b => [b.ix, b.iz, b.lv, PIECES.indexOf(b.piece), b.dir === 'x' ? 4 : b.dir === 'z' ? 5 : b.dir, MAT_ORDER.indexOf(b.mat), Math.round(b.hp / b.maxhp * 100), Math.round(b.prog * 100), b.edit | 0]);
-    const m = { n: Net.matchNo, vs: (G.vans || []).map(v => [Math.ceil(v.cd), r1(v.prog)]), mk: G.fighters.filter(f => f.kind === 'human' && f.marker).map(f => [f.id, r1(f.marker.x), r1(f.marker.z)]), pd: G.pads.map(p => [r1(p.x), r1(p.y), r1(p.z)]), c: bits(ch), x: bits(bx), p: G.propDead.slice(-700).map(v => v.toString(36)).join(','), bc: [Net.buildCycle, chunks, G.buildVer], b: part };
-    let s = JSON.stringify(m);
-    while (s.length > 3950 && m.b.length) { m.b.length = Math.floor(m.b.length * 0.7); s = JSON.stringify(m); }
+    const enc = b => [b.ix, b.iz, b.lv, PIECES.indexOf(b.piece), b.dir === 'x' ? 4 : b.dir === 'z' ? 5 : b.dir, MAT_ORDER.indexOf(b.mat), Math.round(b.hp / b.maxhp * 100), Math.round(b.prog * 100), b.edit | 0];
+    G.buildGone = (G.buildGone || []).filter(g => G.time - g.t < 6 && !G.builds.has(g.key));
+    let pd = G.propDead.slice(-700).map(v => v.toString(36)).join(',');
+    while (pd.length > 1500) pd = pd.slice(pd.indexOf(',', pd.length - 1500) + 1);
+    const m = { n: Net.matchNo, vs: (G.vans || []).map(v => [Math.ceil(v.cd), r1(v.prog)]), mk: G.fighters.filter(f => f.kind === 'human' && f.marker).map(f => [f.id, r1(f.marker.x), r1(f.marker.z)]), pd: G.pads.map(p => [r1(p.x), r1(p.y), r1(p.z)]), c: bits(ch), x: bits(bx), p: pd,
+      bg: G.buildGone.slice(-40).map(g => [g.key, g.fx ? 1 : 0]), bc: [all.length], b: [] };
+    let size = JSON.stringify(m).length, cur = Net.buildCursor || 0, n = 0;
+    if (cur >= all.length) cur = 0;
+    for (const b of all) { if (G.time - (b.born || 0) > 3 || m.b.length >= 30) continue; const r = enc(b); m.b.push(r); size += JSON.stringify(r).length + 1; }   // brand-new builds go out straight away
+    while (n < all.length) { const r = enc(all[(cur + n) % all.length]), l = JSON.stringify(r).length + 1; if (size + l > 3900) break; m.b.push(r); size += l; n++; }
+    Net.buildCursor = all.length ? (cur + n) % all.length : 0;
     Net.room.emit('w', m).catch(() => { });
   }
 }
@@ -6570,7 +6623,7 @@ Net.onSnap = function (msg) {
     f.tx = row[1]; f.ty = row[2]; f.tz = row[3]; f.tyaw = row[4];
     if (f._snapInit === undefined || hyp(f.x - row[1], f.z - row[3]) > 30) { f.x = row[1]; f.y = row[2]; f.z = row[3]; f.yaw = row[4]; f._snapInit = 1; }
     f.phase = ['bus', 'sky', 'ground', 'ground'][fl & 3]; f.glide = !!(fl & 4); f.knocked = !!(fl & 8); f.swim = !!(fl & 16);
-    if (fl & 32) f.muzzle = 0.06; f.buildMode = !!(fl & 64); f.ads = !!(fl & 256); f.using = !!(fl & 512); f.emote = fl & 1024 ? 1 : 0; f.inBush = !!(fl & 2048); if (fl & 4096) f.hurt = 0.2;
+    if (fl & 32) f.muzzle = 0.06; f.buildMode = !!(fl & 64); f.ads = !!(fl & 256); f.using = !!(fl & 512); f.emote = fl & 1024 ? 1 : 0; f.inBush = !!(fl & 2048); if (fl & 4096) f.hurt = 0.2; f.crouch = !!(fl & 8192);
     f.hp = row[6]; f.sh = row[7]; f.sel = row[8]; f.pitch = row[10];
     const held = row[9];
     if (held >= 100) { f.slots[0] = { k: HEAL_KEYS[held - 100], n: 1 }; f.sel = 0; }
@@ -6606,7 +6659,7 @@ Net.onSnap = function (msg) {
   if (d.o && !G.over) {
     G.over = true; G.endT = 0; G.winnerTeam = d.o[0]; G.winner = byId.get(d.o[1]) || null;
     if (G.winnerTeam === G.me.team) { G.me.place = 1; sfx('victory', .8); confetti(); }
-    setPointerLock(false); matchUI();
+    if (G.winnerTeam !== G.me.team) setPointerLock(false); matchUI();
   }
   for (const e of d.e || []) {
     if (e[0] === 'k') { G.feed.push({ text: String(e[1]).slice(0, 80), life: 6, mine: !!e[2] }); if (G.feed.length > 6) G.feed.shift(); }
@@ -6617,6 +6670,7 @@ Net.onSnap = function (msg) {
     else if (e[0] === 'b') burst(e[1], e[2], e[3], e[4], Math.min(16, e[5] | 0), e[6]);
     else if (e[0] === 'd') { const f = { x: e[1], y: e[2], z: e[3], outfit: e[4] }; derez(f); }
     else if (e[0] === 's') playAt(String(e[1]), e[2], e[3], e[4], false);
+    else if (e[0] === 'sw') shockFx(+e[1], +e[2], +e[3]);
     else if (e[0] === 'nd') G.nades.push({ x: +e[1], y: +e[2], z: +e[3], vx: +e[4], vy: +e[5], vz: +e[6], t: 0, visual: true });
   }
 };
@@ -6675,22 +6729,28 @@ Net.onWorld = function (msg) {
   unbits(m.c, G.chests.length).forEach((b, i) => { if (b) G.chests[i].opened = true; });
   unbits(m.x, G.boxes.length).forEach((b, i) => { if (b) G.boxes[i].opened = true; });
   if (m.p) for (const s of m.p.split(',')) { const id = parseInt(s, 36); const p = W.props[id]; if (p && !p.dead) { p.dead = true; if (PROP_TYPES[p.type].solid) gridRemove(p); G.propDead.push(id); markPropsDirty(p.type); } }
-  // builds arrive in chunks; anything not seen during a full cycle is gone
-  const [cyc, chunks] = m.bc;
-  if (cyc === 0 || !Net.seenBuilds) { if (Net.seenBuilds && Net.cycleChunks) for (const [k, b] of G.builds) if (!Net.seenBuilds.has(k) && G.time - (b.born || 0) > 3) removeBuild(b, true); Net.seenBuilds = new Set(); }
-  Net.cycleChunks = chunks;
-  for (const r of m.b) {
+  // builds the leader says were destroyed (with the break effect only if they were broken, not edited)
+  if (Array.isArray(m.bg)) for (const g of m.bg) { const b = Array.isArray(g) && G.builds.get(String(g[0])); if (b) removeBuild(b, !!g[1]); }
+  // every build arrives a few at a time; update or add each one
+  for (const r of Array.isArray(m.b) ? m.b : []) {
     const piece = PIECES[r[3]], dir = r[4] === 4 ? 'x' : r[4] === 5 ? 'z' : r[4], mat = MAT_ORDER[r[5]];
     if (!piece || !mat) continue;
     const k = { piece, ix: r[0] | 0, iz: r[1] | 0, lv: r[2] | 0, dir };
     k.key = piece[0] + ':' + k.ix + ':' + k.iz + ':' + k.lv + ':' + k.dir;
-    Net.seenBuilds.add(k.key);
     let b = G.builds.get(k.key);
-    if (!b) { b = addBuild(k, mat, -1, r[6] / 100, r[7] / 100); b.born = G.time; }
+    if (b && b.mat !== mat) { removeBuild(b, false); b = null; }
+    if (!b) b = addBuild(k, mat, -1, r[6] / 100, r[7] / 100);
+    b.seenAt = G.time; b.confirmed = true;
     b.hp = b.maxhp * r[6] / 100; b.prog = r[7] / 100;
     if ((b.edit | 0) !== (r[8] | 0) && EDIT_NAMES[piece] && (r[8] | 0) < EDIT_NAMES[piece].length) setBuildEdit(b, r[8] | 0);
   }
-  if (chunks === 1) { for (const [k, b] of G.builds) if (!Net.seenBuilds.has(k) && G.time - (b.born || 0) > 3) removeBuild(b, true); Net.seenBuilds = new Set(); }
+  // safety net: a build the leader hasn't mentioned for a long while quietly goes (no break effect).
+  // our own build that the leader never accepted goes after a few seconds
+  const total = Array.isArray(m.bc) ? +m.bc[0] || 0 : 0, per = Math.max(20, (m.b || []).length);
+  const stale = Math.max(12, Math.ceil(total / per) * 0.7 * 3 + 4);
+  for (const b of [...G.builds.values()]) {
+    if (b.confirmed ? G.time - b.seenAt > stale : G.time - (b.born || 0) > 4) removeBuild(b, false);
+  }
 };
 
 // ---------------------------------------------------------------- friends: local loop
@@ -6705,7 +6765,7 @@ function clientUpdate(dt) {
     controlLocal(dt);
     // local feedback for shooting (the host does the real hit test)
     const it = me.cur();
-    if (Input.mb[0] && Input.locked && !me.buildMode && me.phase === 'ground' && (!me.vehicle || me.seat > 0) && !me.knocked) {
+    if (Input.mb[0] && Input.locked && !G.over && !me.buildMode && me.phase === 'ground' && (!me.vehicle || me.seat > 0) && !me.knocked) {
       if (it && WEAPONS[it.k] && me.fireCd <= 0 && it.mag > 0 && me.reloadT <= 0 && !me.swim) {
         const w = WEAPONS[it.k]; me.fireCd = 1 / w.rate; me.muzzle = 0.06; G.shake = Math.max(G.shake, w.shake * 0.6);
         playAt('gun_' + (w.shotgun ? 'pump' : it.k === 'SNIPER' ? 'sniper' : it.k === 'PISTOL' ? 'pistol' : it.k === 'SMG' ? 'smg' : 'ar'), me.x, me.y, me.z, true);
@@ -6732,7 +6792,7 @@ function clientUpdate(dt) {
   }
   updateCommon(dt);
   if (!me.alive) { G.deathT += dt; if (!G.spectate || !G.spectate.alive) G.spectate = G.fighters.find(f => f.alive && f.team === me.team) || G.fighters.find(f => f.alive) || null; }
-  if (G.over) { G.endT += dt; if (G.endT > (G.winnerTeam === me.team ? 7 : 5)) finishMatch(); }
+  if (G.over) { G.endT += dt; if (G.endT > (G.winnerTeam === me.team ? VICTORY_T : 5)) finishMatch(); }
   {
     // a loading screen, a busy tab or the leader still loading must never count as a lost connection
     const now = performance.now();
@@ -6748,8 +6808,8 @@ function clientUpdate(dt) {
     Net.presT = 0.05;
     const h = me.vehicle;
     const st = { no: Net.matchNo, x: r1(me.x), y: Math.round(me.y * 100) / 100, z: r1(me.z), yaw: Math.round(me.yaw * 100) / 100, pi: Math.round(me.pitch * 100) / 100,
-      ph: me.phase === 'bus' ? 0 : me.phase === 'sky' ? 1 : 2, gl: me.glide ? 1 : 0, sw: me.swim ? 1 : 0, gr: me.grounded ? 1 : 0, sel: me.sel, bm: me.buildMode ? 1 : 0, ads: me.ads ? 1 : 0,
-      mv: Math.round(me.moveAmt * 10) / 10, fire: Input.mb[0] && Input.locked && !me.buildMode ? 1 : 0, aim: [r1(Cam.aim[0]), r1(Cam.aim[1]), r1(Cam.aim[2])],
+      ph: me.phase === 'bus' ? 0 : me.phase === 'sky' ? 1 : 2, gl: me.glide ? 1 : 0, sw: me.swim ? 1 : 0, gr: me.grounded ? 1 : 0, sel: me.sel, bm: me.buildMode ? 1 : 0, ads: me.ads ? 1 : 0, cr: me.crouch ? 1 : 0,
+      mv: Math.round(me.moveAmt * 10) / 10, fire: Input.mb[0] && Input.locked && !me.buildMode && !G.over ? 1 : 0, aim: [r1(Cam.aim[0]), r1(Cam.aim[1]), r1(Cam.aim[2])],
       e: kd('use') ? 1 : 0, rv: interactTarget && interactTarget.kind === 'revive' ? interactTarget.obj.id : -1,
       rbv: interactTarget && interactTarget.kind === 'reboot' ? interactTarget.obj.id : -1, rbn: me.rebootNo | 0, em: me.emoteId || 0,
       veh: h ? [h.kind === 'car' ? 1 : 0, h.id, me.seat | 0, r1(h.x), r1(h.y), r1(h.z), Math.round(h.yaw * 100) / 100, r1(h.vx || 0), r1(h.vz || 0), h.kind === 'car' ? r1(h.speed) : Math.round(h.spin)] : null, acts: Net.acts,
