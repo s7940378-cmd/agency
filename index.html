@@ -3509,7 +3509,7 @@ function buildScene() {
     };
     for (const p of W.pads) drape(p.x - p.w / 2, p.z - p.d / 2, p.x + p.w / 2, p.z + p.d / 2, p.col, 0.05);
     for (const f of W.fields) {
-      for (let i = 0; i < 8; i++) drape(f.x - f.w / 2, f.z - f.d / 2 + i * f.d / 8, f.x + f.w / 2, f.z - f.d / 2 + (i + .55) * f.d / 8, [.55, .62, .2], 0.07);
+      for (let i = 0; i < 8; i++) drape(f.x - f.w / 2, f.z - f.d / 2 + i * f.d / 8, f.x + f.w / 2, f.z - f.d / 2 + (i + .55) * f.d / 8, [.55, .62, .2], 0.13);
       drape(f.x - f.w / 2, f.z - f.d / 2, f.x + f.w / 2, f.z + f.d / 2, [.5, .38, .22], 0.06);
     }
     for (const r of W.roads) for (let i = 0; i < r.length - 1; i++) {
@@ -3557,7 +3557,7 @@ function buildScene() {
       };
       wins('N', H.x0, H.x1, H.z0); wins('S', H.x0, H.x1, H.z1); wins('W', H.z0, H.z1, H.x0); wins('E', H.z0, H.z1, H.x1);
       // floor inside
-      g.box(H.x0 + .15, y, H.z0 + .15, H.x1 - .15, y + 0.06, H.z1 - .15, H.kind === 'agency' ? [.85, .85, .88] : [.55, .42, .3], { side: [.5, .4, .3] });
+      g.box(H.x0 + .15, y, H.z0 + .15, H.x1 - .15, y + 0.12, H.z1 - .15, H.kind === 'agency' ? [.85, .85, .88] : [.55, .42, .3], { side: [.5, .4, .3] });
       // roof trim + chimney
       g.box(H.x0 - .25, y + H.h + .35, H.z0 - .25, H.x1 + .25, y + H.h + .55, H.z0 + .1, mixc(H.roof, [1, 1, 1], .15));
       g.box(H.x0 - .25, y + H.h + .35, H.z1 - .1, H.x1 + .25, y + H.h + .55, H.z1 + .25, mixc(H.roof, [1, 1, 1], .15));
@@ -4475,7 +4475,16 @@ function drawTrails(t) {
 // =====================================================================
 //  HUD (2D canvas over the 3D view)
 // =====================================================================
-let hud = null, hctx = null, HW = 0, HH = 0, HS = 1, mapImg = null;
+let hud = null, hctx = null, HW = 0, HH = 0, HS = 1, mapImg = null, SAFE = { t: 0, r: 0, b: 0, l: 0 };
+// phones and tablets: the hotbar fits between the move stick and the button cluster, above the home bar
+function touchHot() {
+  const n = 6, gap = 6, rp = Math.max(26, SAFE.r + 22);
+  const R = HW - rp - clamp(HH * 0.39, 130, 210) - clamp(HH * 0.15, 52, 84) - 12;   // left edge of the BUILD button
+  const L = SAFE.l + 16 + clamp(HH * 0.13, 46, 70) + 110 - 40;                       // right of the move stick
+  const sz = Math.max(40, Math.min(82, HH * 0.15, (R - L - gap * (n - 1)) / n)), w = n * sz + (n - 1) * gap;
+  const x0 = clamp((L + R) / 2 - w / 2, SAFE.l + 8, HW - w - 8), y = HH - Math.max(SAFE.b, 6) - 8 - sz;
+  return { sz, gap, x0, y, w };
+}
 const FONT = '"Barlow Condensed","Arial Narrow",Arial,sans-serif';
 const DFONT = '"Black Ops One",Impact,"Arial Narrow",sans-serif';
 
@@ -4500,7 +4509,11 @@ function buildMapImage() {
 }
 function resizeHud() {
   const dpr = Math.min(window.devicePixelRatio || 1, IS_MOBILE ? 2 : LOW_END ? 1 : 1.5);   // sharp text is not worth the frame rate on a Chromebook
-  HW = hud.clientWidth; HH = hud.clientHeight; HS = clamp(Math.min(HW / 1280, HH / 720), 0.62, 1.4);
+  HW = hud.clientWidth; HH = hud.clientHeight; HS = clamp(Math.min(HW / 1280, HH / 720), TOUCH.on ? 0.78 : 0.62, 1.4);
+  // phone notch / home bar insets, so nothing important sits under them
+  let pr = document.getElementById('safeprobe');
+  if (!pr) { pr = document.createElement('div'); pr.id = 'safeprobe'; pr.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)'; document.body.appendChild(pr); }
+  const cs = getComputedStyle(pr); SAFE = { t: parseFloat(cs.paddingTop) || 0, r: parseFloat(cs.paddingRight) || 0, b: parseFloat(cs.paddingBottom) || 0, l: parseFloat(cs.paddingLeft) || 0 };
   hud.width = Math.round(HW * dpr); hud.height = Math.round(HH * dpr);
   hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   document.documentElement.style.setProperty('--mm', Math.round(194 * HS + 10) + 'px');   // minimap width, for the touch buttons
@@ -4627,7 +4640,13 @@ function drawHud(dt, t) {
   if (!Cam.scoped && me.phase === 'ground' && (!me.vehicle || me.seat > 0)) drawCrosshair();
   if (G.hitmarker > 0) { c.strokeStyle = '#fff'; c.lineWidth = 2.5; const cx = HW / 2, cy = HH / 2, r = 12; c.beginPath(); c.moveTo(cx - r, cy - r); c.lineTo(cx - 5, cy - 5); c.moveTo(cx + r, cy - r); c.lineTo(cx + 5, cy - 5); c.moveTo(cx - r, cy + r); c.lineTo(cx - 5, cy + 5); c.moveTo(cx + r, cy + r); c.lineTo(cx + 5, cy + 5); c.stroke(); }
   // health / shield
-  { const w = (TOUCH.on ? 150 : 300) * s, x = TOUCH.on ? HW / 2 - 180 * s : 18 * s, y = TOUCH.on ? HH - 120 * s : HH - 74 * s;
+  if (TOUCH.on) {
+    // phones: shield + health in a compact block just above the left half of the hotbar
+    const T = touchHot(), w = T.w * 0.5 - 40, x = T.x0, y = T.y - 34, h1 = 11, h2 = 14;
+    rrect(x, y, w, h1, 4, 'rgba(0,0,0,.5)'); rrect(x, y, w * me.sh / 100, h1, 4, '#4aa8ff');
+    rrect(x, y + h1 + 4, w, h2, 4, 'rgba(0,0,0,.5)'); rrect(x, y + h1 + 4, w * me.hp / 100, h2, 4, me.knocked ? '#ff6a5a' : '#6fe07f');
+    txt(String(Math.ceil(me.sh)), x + w + 6, y + h1 / 2, 15, '#fff'); txt(String(Math.ceil(me.hp)), x + w + 6, y + h1 + 4 + h2 / 2, 17, '#fff');
+  } else { const w = 300 * s, x = 18 * s, y = HH - 74 * s;
     rrect(x, y, w, 18 * s, 4, 'rgba(0,0,0,.45)'); rrect(x, y, w * me.sh / 100, 18 * s, 4, '#4aa8ff');
     rrect(x, y + 24 * s, w, 22 * s, 4, 'rgba(0,0,0,.45)'); rrect(x, y + 24 * s, w * me.hp / 100, 22 * s, 4, me.knocked ? '#ff6a5a' : '#6fe07f');
     txt(String(Math.ceil(me.sh)), x + w + 10 * s, y + 9 * s, 18, '#fff'); txt(String(Math.ceil(me.hp)), x + w + 10 * s, y + 35 * s, 20, '#fff');
@@ -4705,10 +4724,13 @@ function drawCrosshair() {
   c.shadowBlur = 0;
 }
 function drawHotbar() {
-  const c = hctx, s = HS, me = G.me, sz = (TOUCH.on ? 54 : 62) * s, gap = 6 * s;
-  // on a phone the hotbar sits in the middle, between the stick and the buttons - tap a slot to pick it
-  const x0 = TOUCH.on ? HW / 2 - 3 * (sz + gap) : HW - 16 * s - 6 * (sz + gap), y = HH - sz - (TOUCH.on ? 14 : 18) * s;
-  const RX = TOUCH.on ? x0 + 6 * (sz + gap) - gap : HW - 18 * s;
+  const c = hctx, me = G.me, TH = TOUCH.on ? touchHot() : null;
+  let s = HS;
+  // on a phone the hotbar sits between the stick and the buttons, above the home bar - tap a slot to pick it
+  const sz = TH ? TH.sz : 62 * s, gap = TH ? TH.gap : 6 * s;
+  const x0 = TH ? TH.x0 : HW - 16 * s - 6 * (sz + gap), y = TH ? TH.y : HH - sz - 18 * s;
+  const RX = TH ? x0 + TH.w : HW - 18 * s;
+  if (TH) s = sz / 62;   // icons scale with the slot
   window.HUD_SLOTS = [];
   // pickaxe slot + 5 slots
   for (let i = -1; i < 5; i++) {
@@ -4719,16 +4741,28 @@ function drawHotbar() {
     bg.addColorStop(0, rc ? rc.col + 'cc' : 'rgba(30,34,60,.75)'); bg.addColorStop(1, rc ? 'rgba(20,20,30,.85)' : 'rgba(15,17,32,.8)');
     rrect(x, y, sz, sz, 6, bg);
     if (on) { c.strokeStyle = '#fff'; c.lineWidth = 3; c.strokeRect(x + 1.5, y + 1.5, sz - 3, sz - 3); }
-    if (i < 0) { c.save(); c.translate(x + sz / 2, y + sz / 2); c.rotate(-0.7); c.fillStyle = '#8a5a30'; c.fillRect(-3 * s, -20 * s, 6 * s, 40 * s); c.fillStyle = '#b8c7e0'; c.fillRect(-14 * s, -22 * s, 28 * s, 7 * s); c.restore(); txt(K('pickaxe'), x + sz / 2, y + sz + 9 * s, 11, '#aab', 'center', null, false); continue; }
-    txt(String(i + 1), x + sz / 2, y + sz + 9 * s, 11, '#aab', 'center', null, false);
+    if (i < 0) { c.save(); c.translate(x + sz / 2, y + sz / 2); c.rotate(-0.7); c.fillStyle = '#8a5a30'; c.fillRect(-3 * s, -20 * s, 6 * s, 40 * s); c.fillStyle = '#b8c7e0'; c.fillRect(-14 * s, -22 * s, 28 * s, 7 * s); c.restore(); if (!TH) txt(K('pickaxe'), x + sz / 2, y + sz + 9 * s, 11, '#aab', 'center', null, false); continue; }
+    if (!TH) txt(String(i + 1), x + sz / 2, y + sz + 9 * s, 11, '#aab', 'center', null, false);
     if (!it) continue;
     const k = itemKind(it);
-    if (k === 'gun') { drawGunIcon(it.k, x + sz / 2, y + sz / 2 - 4 * s, sz * .8); txt(String(it.mag), x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
+    if (k === 'gun') { drawGunIcon(it.k, x + sz / 2, y + sz / 2 - 4 * s, TH ? sz * .48 : sz * .8); txt(String(it.mag), x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
     else if (k === 'move') { drawMoveIcon(it.k, x + sz / 2, y + sz / 2 - 3 * s, sz * .62); if (it.n > 1 || MOVES[it.k].charges) txt((MOVES[it.k].charges ? '' : 'x') + it.n, x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
     else { drawHealIcon(it.k, x + sz / 2, y + sz / 2 - 3 * s, 15 * s); txt('x' + it.n, x + sz - 6 * s, y + sz - 10 * s, 14, '#fff', 'right'); }
   }
   // ammo for current gun
   const g = me.gun();
+  if (TH) {
+    // phones: ammo on the right above the hotbar, materials in a small row next to it
+    if (g) { const w = WEAPONS[g.k]; txt(g.mag + ' / ' + me.ammo[w.ammo], RX, y - 16, 26, '#fff', 'right', 'd'); }
+    const bw = Math.min(64, (TH.w * 0.5 - 12) / 3), mx = x0, my = y - 64;   // above the health bars
+    MAT_ORDER.forEach((m, i) => {
+      const x = mx + i * (bw + 3), on = me.buildMode && buildMat === m;
+      rrect(x, my, bw, 22, 5, on ? 'rgba(255,216,58,.9)' : 'rgba(10,12,28,.6)');
+      c.fillStyle = `rgb(${MATS[m].col.map(v => v * 255 | 0)})`; c.fillRect(x + 4, my + 6, 9, 9);
+      txt(String(me.mats[m]), x + 16, my + 11, 16, on ? '#111' : '#fff', 'left', null, !on);
+    });
+    if (g) txt(RARITY[g.r].name.toUpperCase() + ' ' + WEAPONS[g.k].name.toUpperCase(), RX, y - 46, 14, RARITY[g.r].col, 'right');
+  } else {
   if (g) { const w = WEAPONS[g.k]; txt(RARITY[g.r].name.toUpperCase() + ' ' + w.name.toUpperCase(), RX, y - 40 * s, 14, RARITY[g.r].col, 'right'); txt(g.mag + ' / ' + me.ammo[w.ammo], RX, y - 18 * s, 24, '#fff', 'right', 'd'); }
   // materials
   const mx = RX - 3 * 74 * s, my = y - 76 * s;
@@ -4738,6 +4772,7 @@ function drawHotbar() {
     c.fillStyle = `rgb(${MATS[m].col.map(v => v * 255 | 0)})`; c.fillRect(x + 6 * s, my + 6 * s, 12 * s, 12 * s);
     txt(String(me.mats[m]), x + 24 * s, my + 12 * s, 16, on ? '#111' : '#fff', 'left', null, !on);
   });
+  }
   if (me.buildMode && !TOUCH.on) {
     const bx = HW / 2 - 2 * 58 * s, by = HH - 90 * s;
     PIECES.forEach((p, i) => {
@@ -6220,8 +6255,8 @@ function buildTouchUI() {
     e.preventDefault(); initAudio();
     for (const t of e.changedTouches) {
       // a tap on the hotbar picks that slot
-      const slot = (window.HUD_SLOTS || []).find(r => t.clientX >= r.x - 4 && t.clientX <= r.x + r.w + 4 && t.clientY >= r.y - 4 && t.clientY <= r.y + r.h + 14);
-      if (slot && G && !G.me.vehicle) { vTap(slot.i < 0 ? 'pickaxe' : 'slot' + (slot.i + 1)); own.set(t.identifier, { kind: 'none' }); continue; }
+      const slot = (window.HUD_SLOTS || []).find(r => t.clientX >= r.x - 4 && t.clientX <= r.x + r.w + 4 && t.clientY >= r.y - 8 && t.clientY <= r.y + r.h + 20);
+      if (slot && G) { touchSlot(slot.i); own.set(t.identifier, { kind: 'none' }); continue; }
       if (t.clientX < innerWidth * 0.42 && ![...own.values()].some(s => s.kind === 'joy')) {
         const s = { kind: 'joy', cx: t.clientX, cy: t.clientY }; own.set(t.identifier, s);
         stick.style.left = s.cx + 'px'; stick.style.top = s.cy + 'px'; stick.classList.add('on');
@@ -6251,6 +6286,13 @@ function buildTouchUI() {
       else if (b.dataset.t) touchMenu(b.dataset.t);
     }, { passive: false });
   });
+}
+// tapping the hotbar picks that slot straight away (pickaxe is the first one)
+function touchSlot(i) {
+  const f = G.me; if (!f || !f.alive || f.phase !== 'ground' || f.vehicle) return;
+  if (i >= 0 && f.sel !== i) { f.reloadT = 0; f.using = false; }
+  f.sel = i; f.buildMode = false; if (i < 0) f.using = false;
+  sfx('click', .25);
 }
 function touchMenu(what) {
   if (!G) return;
