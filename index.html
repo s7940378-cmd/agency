@@ -2070,6 +2070,23 @@ function pickUp(f, p, swap) {
   if (k !== 'ammo' && k !== 'mat' || f === G.me) sfxFor(f, 'pickup', .4);
   return true;
 }
+// walking over something you already carry tops up your stack automatically (ammo, materials,
+// and heals / grenades you have a stack of with room left) - anything that doesn't fit stays on the ground
+function stackCap(it) { const k = itemKind(it); return k === 'heal' ? HEALS[it.k].stack : k === 'move' && !MOVES[it.k].charges ? MOVES[it.k].stack : 0; }
+function autoPickable(f, p) {
+  const k = itemKind(p.item); if (k === 'ammo' || k === 'mat') return true;
+  const cap = stackCap(p.item); return cap > 0 && f.slots.some(s => s && s.k === p.item.k && s.n < cap);
+}
+function autoPickUp(f, p) {
+  const k = itemKind(p.item); if (k === 'ammo' || k === 'mat') return pickUp(f, p);
+  const it = p.item, cap = stackCap(it); let n = it.n, got = 0;
+  for (const s of f.slots) if (s && s.k === it.k && s.n < cap && n > 0) { const t = Math.min(cap - s.n, n); s.n += t; n -= t; got += t; }
+  if (!got) return false;
+  if (n > 0) p.item = { k: it.k, n }; else removePickup(p);
+  sfxFor(f, 'pickup', .4);
+  floatText(f, p.x, p.y + 1, p.z, '+' + got + ' ' + (HEALS[it.k] || MOVES[it.k]).name.toUpperCase(), '#fff');
+  return true;
+}
 function removePickup(p) { const i = G.pickups.indexOf(p); if (i >= 0) G.pickups.splice(i, 1); p.gone = true; }
 function openChest(c, f) {
   if (c.opened) return; c.opened = true;
@@ -2477,7 +2494,7 @@ function drawVanIcon(x, y, sz, ready) {
 // =====================================================================
 // seat: [side, height, forward, facing]
 const HELI_SEATS = [[-.45, -.02, .95, 0], [.45, -.02, .95, 0], [-.78, -.02, -.45, -Math.PI / 2], [.78, -.02, -.45, Math.PI / 2]];
-const CAR_SEATS = [[-.4, -.06, -.15, 0], [.4, -.06, -.15, 0]];
+const CAR_SEATS = [[.4, -.06, -.15, 0], [-.4, -.06, -.15, 0]];   // driver on the left (like the US), passenger on the right
 const CAR_MAX = 25, CAR_REV = 9;
 function vSeats(v) { return v.kind === 'car' ? CAR_SEATS : HELI_SEATS; }
 function vehicleById(kind, id) { return kind === 'car' || kind === 1 ? (G.cars || [])[id] : G.helis[id]; }
@@ -3224,7 +3241,7 @@ function controlLocal(dt) {
   if (G.net !== 'client') for (const p of G.pickups) {
     if (p.delay > 0) continue;
     const k = itemKind(p.item);
-    if ((k === 'ammo' || k === 'mat') && Math.abs(p.x - f.x) < 1.4 && Math.abs(p.z - f.z) < 1.4 && Math.abs(p.y - f.y) < 2) { pickUp(f, p); break; }
+    if (Math.abs(p.x - f.x) < 1.4 && Math.abs(p.z - f.z) < 1.4 && Math.abs(p.y - f.y) < 2 && autoPickable(f, p)) { autoPickUp(f, p); break; }
   }
   // interact
   const it = findInteract(f);
@@ -3610,7 +3627,7 @@ function buildScene() {
       g.box(-.7, .55, -.45, -.12, .72, .2, S); g.box(.12, .55, -.45, .7, .72, .2, S);     // seats
       g.box(-.7, .72, -.6, -.12, 1.22, -.42, S); g.box(.12, .72, -.6, .7, 1.22, -.42, S); // seat backs
       g.box(-.8, .82, .72, .8, 1.0, .9, D);                           // dashboard
-      g.box(-.47, .95, .5, -.33, 1.1, .58, D);                        // steering wheel
+      g.box(.33, .95, .5, .47, 1.1, .58, D);                          // steering wheel (left-hand drive)
       g.box(-.86, 1.0, .86, -.78, 1.42, .93, D); g.box(.78, 1.0, .86, .86, 1.42, .93, D); g.box(-.86, 1.38, .86, .86, 1.44, .93, D);  // windscreen frame
       g.box(-.78, 1.0, .885, .78, 1.38, .9, [.55, .7, .86]);         // windscreen
       g.box(-.86, .95, -1.05, -.78, 1.38, -.95, D); g.box(.78, .95, -1.05, .86, 1.38, -.95, D); g.box(-.86, 1.32, -1.05, .86, 1.38, -.95, D);   // roll bar
@@ -4683,11 +4700,15 @@ function drawHud(dt, t) {
     if (next) txt(K('edit') + '  EDIT: ' + next, HW / 2, HH / 2 + 40 * s, 14, '#ffd83a', 'center');
   }
   if (me.vehicle) {
-    rrect(HW - 230 * s, HH - 120 * s, 210 * s, 90 * s, 8, 'rgba(10,12,28,.75)');
-    txt(Math.round(hyp(me.vehicle.vx, me.vehicle.vz) * 3.6) + ' KM/H', HW - 214 * s, HH - 96 * s, 22, '#fff');
-    if (me.vehicle.kind !== 'car') txt('ALT ' + Math.round(me.vehicle.y - groundH(me.vehicle.x, me.vehicle.z)) + ' m', HW - 214 * s, HH - 68 * s, 18, '#ffd83a');
-    txt(me.seat > 0 ? 'PASSENGER - SHOOT OUT   ' + K('pickaxe') + ' EXIT' : me.vehicle.kind === 'car' ? K('jump') + ' BRAKE  ' + K('pickaxe') + ' EXIT' : K('jump') + ' UP  ' + K('sprint') + ' DOWN  ' + K('pickaxe') + ' EXIT', HW - 214 * s, HH - 44 * s, 13, '#c8d0ff');
+    // desktop: above the hotbar on the right; phones: top middle, clear of the buttons
+    const px = TOUCH.on ? HW / 2 - 105 * s : HW - 230 * s, py = TOUCH.on ? 64 * s : HH - 250 * s, tx = px + 16 * s;
+    rrect(px, py, 210 * s, TOUCH.on ? 62 * s : 90 * s, 8, 'rgba(10,12,28,.75)');
+    txt(Math.round(hyp(me.vehicle.vx, me.vehicle.vz) * 3.6) + ' KM/H', tx, py + 24 * s, 22, '#fff');
+    if (me.vehicle.kind !== 'car') txt('ALT ' + Math.round(me.vehicle.y - groundH(me.vehicle.x, me.vehicle.z)) + ' m', tx + (TOUCH.on ? 110 * s : 0), py + (TOUCH.on ? 24 : 52) * s, 18, '#ffd83a');
+    if (!TOUCH.on) txt(me.seat > 0 ? 'PASSENGER - SHOOT OUT   ' + K('pickaxe') + ' EXIT' : me.vehicle.kind === 'car' ? K('jump') + ' BRAKE  ' + K('pickaxe') + ' EXIT' : K('jump') + ' UP  ' + K('sprint') + ' DOWN  ' + K('pickaxe') + ' EXIT', tx, py + 76 * s, 13, '#c8d0ff');
+    else txt(me.seat > 0 ? 'PASSENGER - YOU CAN SHOOT' : 'DRIVING', tx, py + 48 * s, 13, '#c8d0ff');
   }
+
   if (G.over && G.winnerTeam === me.team) {
     txt('#1', HW / 2, HH * .3, 70, '#ffd83a', 'center', 'd');
     txt('VICTORY!', HW / 2, HH * .3 + 64 * s, 54, '#fff', 'center', 'd');
@@ -6545,7 +6566,7 @@ function netApplyRemote(f, dt) {
   // auto pick up ammo/materials near them
   for (const p of G.pickups) {
     if (p.delay > 0) continue; const k = itemKind(p.item);
-    if ((k === 'ammo' || k === 'mat') && Math.abs(p.x - f.x) < 1.4 && Math.abs(p.z - f.z) < 1.4 && Math.abs(p.y - f.y) < 2) { pickUp(f, p); break; }
+    if (Math.abs(p.x - f.x) < 1.4 && Math.abs(p.z - f.z) < 1.4 && Math.abs(p.y - f.y) < 2 && autoPickable(f, p)) { autoPickUp(f, p); break; }
   }
 }
 
